@@ -63,6 +63,9 @@ class HardwareNode(Node):
         self.odom_pub = self.create_publisher(Odometry, "/hardware/odom", 1)
         self.pc2_pub = self.create_publisher(PointCloud2, "/tof/cloud", 10)
         
+        #For tests
+        self.wheel_test_sub = self.create_subscription(Float32MultiArray , "/hardware/wheel_targets", self.handle_wheel_targets, 10)
+        self.wheel_test_active = False
         self.tof_tan_lookup = compute_zone_angles()
         self.read_thread = Thread(target=self.read_loop, daemon=True)
         self.read_thread.start()
@@ -118,6 +121,8 @@ class HardwareNode(Node):
             payload.batt_voltage,
             payload.batt_current,
             payload.batt_percent,
+
+            float(payload.flags)
         ]
         self.status_pub.publish(status)
 
@@ -151,7 +156,6 @@ class HardwareNode(Node):
             list(payload.distance_mm),
             dtype=np.float32
         )
-        #print(distances.reshape(8,8))
 
         statuses = np.array(
             list(payload.status),
@@ -176,6 +180,21 @@ class HardwareNode(Node):
         )
 
         self.pc2_pub.publish(cloud)
+
+
+    def handle_wheel_targets(self, msg):
+        packet = proto.ControlPacket()
+
+        packet.front_left = msg.data[0]
+        packet.front_right = msg.data[1]
+        packet.rear_left = msg.data[2]
+        packet.rear_right = msg.data[3]
+
+        proto.write_packet(self.ser, packet)
+        if all(abs(x) < 1e-6 for x in msg.data):
+            self.wheel_test_active = False
+        else:
+            self.wheel_test_active = True
 
     def read_loop(self):
         buff = b""
@@ -221,6 +240,9 @@ class HardwareNode(Node):
         return max(current - step, target)
 
     def update(self):
+        if self.wheel_test_active:
+            return
+
         if (self.get_clock().now() - self.last_cmd_time).nanoseconds * 1e-9 > 0.3:
             self.target_v = 0.0
             self.target_w = 0.0
