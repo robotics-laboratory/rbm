@@ -84,45 +84,26 @@ class BaseTest(abc.ABC):
         duration = float(config["duration"])
         timeout = duration + 8 if timeout is None else timeout
 
-        candidates = [
-            Path(__file__).with_name("inject.py"),
-            Path(__file__).resolve().parent.parent / "robomarvel/scripts/inject.py",
-        ]
-        inject_path = next((path for path in candidates if path.exists()), None)
-        assert inject_path is not None, "scripts/inject.py not found"
-
-        source = inject_path.read_text()
-        replacements = {
-            "#DURATION = {duration}": f"DURATION = {duration!r}",
-            "#PUB_DATA = {pub_data}": f"PUB_DATA = {config.get('pub_data', [])!r}",
-            "#SUB_TOPICS = {sub_topics}": f"SUB_TOPICS = {config.get('sub_topics', [])!r}",
+        data = {
+            "duration": duration,
+            "pub_data": config.get("pub_data", []),
+            "sub_topics": config.get("sub_topics", []),
         }
-        for marker, value in replacements.items():
-            assert source.count(marker) == 1, f"Inject marker missing: {marker}"
-            source = source.replace(marker, value, 1)
-
-        cmd = (
-            "export PS1=\"dummy\" && source /root/.bashrc && "
-            "exec /root/venv/bin/python -"
-        )
-        self.log(">>> docker exec -i ros /root/venv/bin/python - < inject.py")
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "exec",
-            "-i",
-            "ros",
-            "bash",
-            "-c",
+        
+        cmd = 'export PS1="dummy" && source /root/.bashrc && python3 /src/scripts/inject.py'
+        cmd = f"docker exec -i ros bash -c 'export PS1=\"dummy\" && source ~/.bashrc && {cmd}'"
+        self.log(f">>> [INJECT] $ {cmd}")
+        proc = await asyncio.create_subprocess_shell(
             cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-
+        
         started = time.perf_counter()
         try:
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(source.encode()),
+                proc.communicate((json.dumps(data) + "\n").encode()),
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
@@ -211,9 +192,9 @@ class SpeakerMicTest(BaseTest):
         output_file = Path(f"/tmp/mic-test-{time.time_ns()}.wav")
         record_proc = self.shell(
             "arecord -c2 -r 48000 -f S32_LE -t wav "
-            f"-V stereo -d 5 -v {output_file}"
+            f"-V stereo -d 2 -v {output_file}"
         )
-        speaker_proc = self.shell("speaker-test -t wav -c2 -s2 -l3")
+        speaker_proc = self.shell("speaker-test -t wav -c2 -s2")
         await asyncio.gather(record_proc, speaker_proc)
         assert output_file.exists(), f"Output file missing: {output_file}"
         assert output_file.stat().st_size != 0, f"Output file empty: {output_file}"
@@ -386,13 +367,13 @@ class DockerROSTest(BaseTest):
         return True
 
 
-class UsbTest(BaseTest):
+class USBTest(BaseTest):
     name = "USB"
 
     EXPECTED_USB = {
-         "ESP": "1a86:7523",
+         "ESP32": "1a86:7523",
          "Camera": "1bcf:0b09",
-         "LIDAR": "10c4:ea60",
+         "Lidar": "10c4:ea60",
          "Audio": "0c76:1203"
     }
 
@@ -417,10 +398,10 @@ class HWStatusTest(BaseTest):
     name = "HW STATUS"
 
     SENSORS = {
-        "Screen": 0,
-        "Ina": 1,
+        "INA": 1,
         "ToF": 2,
-        "Imu": 3,
+        "IMU": 3,
+        "Screen": 0,
     }
 
     async def test(self):
@@ -440,27 +421,11 @@ class HWStatusTest(BaseTest):
             f"Bad /hardware/status data length: {len(values)}, expected at least 20"
         )
 
-        # Previous ros2 topic echo implementation:
-        #output = await self.shell(
-        #    "docker exec ros bash -c 'export PS1=\"dummy\" && source ~/.bashrc && "
-        #    "ros2 topic echo /hardware/status --once'",
-        #    timeout=5,
-        #)
-
-        # FIXME: через yaml парсить результат
-        #values = []
-        #for line in output.splitlines():
-        #    line = line.strip()
-        #    if line.startswith("- "):
-        #        values.append(float(line[2:]))
-
         flags = int(values[19])
-
         fail = []
 
         for name, bit in self.SENSORS.items():
             ok = bool(flags & (1 << bit))
-
             if (ok):
                 self.log(f"[OK] {name}", color="green")
             else:
@@ -468,24 +433,24 @@ class HWStatusTest(BaseTest):
                 fail.append(name)
 
         assert not fail, f"HW sensors failed: {', '.join(fail)}"
-
         return True
 
 
-class WheelTest(BaseTest):
+class MotorsTest(BaseTest):
     name = "MOTORS"
 
-    WHEEL = {
-        "front_left": (0, 1, 1),
-        "front_right": (1, 13, -1),
-        "rear_left": (2, 5, 1),
-        "rear_right": (3, 9, -1),
-    }
+    WHEELS = [
+        # name, index, status index, sign
+        ("FRONT LEFT", 1, 1),
+        ("FRONT RIGHT", 13, -1),
+        ("REAR LEFT", 5, 1),
+        ("REAR RIGHT", 9, -1),
+    ]
 
-    TEST_SPEED = 8.0
-    MIN_SPEED = 0.5
-    TEST_DURATION = 2.0
-    STOP_AT = 1.5
+    SPEED = 10.0
+    DELAY = 2.0
+    CHECK_MARGIN = 0.3
+    RMS_THRESHOLD = 0.5
 
     async def stop(self):
         config = {
@@ -497,92 +462,56 @@ class WheelTest(BaseTest):
             }],
             "sub_topics": [],
         }
-        try:
-            await self.docker_inject(config)
-        except Exception as err:
-            self.log(f"Inject stop failed: {err}; using fallback stop", color="red")
-            await self.docker_shell(
-                "timeout 3 ros2 topic pub --once /hardware/wheel_targets "
-                "std_msgs/msg/Float32MultiArray "
-                '"{data: [0.0, 0.0, 0.0, 0.0]}"',
-                check=False,
-                timeout=5,
-            )
+        await self.docker_inject(config)
 
     async def test(self):
-        try:
-            for name, (target_idx, speed_idx, physical_sign) in self.WHEEL.items():
-                targets = [0.0, 0.0, 0.0, 0.0]
-                targets[target_idx] = self.TEST_SPEED
+        pub_data = []
+        for i in range(4):
+            speeds = [0.0] * 4
+            speeds[i] = self.SPEED * self.WHEELS[i][2]
+            pub_data.append([i * self.DELAY, {"data": speeds}])
+        pub_data.append([4 * self.DELAY, {"data": [0.0] * 4}])
+        
+        config = {
+            "duration": 4 * self.DELAY + 0.5,
+            "pub_data": [{
+                "topic": "/hardware/wheel_targets",
+                "type": "std_msgs.msg.Float32MultiArray",
+                "data": pub_data,
+            }],
+            "sub_topics": [[
+                "/hardware/status",
+                "std_msgs.msg.Float32MultiArray",
+            ]],
+        }
+        
+        output = await self.docker_inject(config)
+        data = output.get("/hardware/status", [])
+        assert data, f"No /hardware/status data received"
 
-                config = {
-                    "duration": self.TEST_DURATION,
-                    "pub_data": [{
-                        "topic": "/hardware/wheel_targets",
-                        "type": "std_msgs.msg.Float32MultiArray",
-                        "data": [
-                            [0.0, {"data": targets}],
-                            [self.STOP_AT, {"data": [0.0, 0.0, 0.0, 0.0]}],
-                        ],
-                    }],
-                    "sub_topics": [[
-                        "/hardware/status",
-                        "std_msgs.msg.Float32MultiArray",
-                    ]],
-                }
+        ok = True
+        for i in range(4):
+            name, index, sign = self.WHEELS[i]
+            start_ts = i * self.DELAY + self.CHECK_MARGIN
+            end_ts = (i + 1) * self.DELAY - self.CHECK_MARGIN
+            start = next(iter(i for i, x in enumerate(data) if x[0] > start_ts), 0)
+            end = next(iter(i for i, x in enumerate(data) if x[0] > end_ts), 0)
+            speeds = [x[1]["data"][index] for x in data[start:end]]
+            msg = [f"{x:.1f}" for x in speeds]
+            self.log(f"[{name}] Speeds: {', '.join(msg)}")
+            if not speeds:
+                self.log(f"[{name}] No speed data", color="red")
+                ok = False
+                continue
+            target = self.SPEED * sign
+            rms = math.sqrt(sum((x - target) ** 2 for x in speeds) / len(speeds))
+            if rms > self.RMS_THRESHOLD:
+                self.log(f"[{name}] Speed RMS fail: {rms:.2f} > {self.RMS_THRESHOLD}", color="red")
+                ok = False
+                continue
+            self.log(f"[{name}] RMS OK: {rms:.2f} < {self.RMS_THRESHOLD}", color="green")
 
-                output = await self.docker_inject(config)
-                samples = output.get("/hardware/status", [])
-                speeds = [
-                    msg["data"][speed_idx]
-                    for ts, msg in samples
-                    if 0.5 <= ts < self.STOP_AT and len(msg.get("data", [])) > speed_idx
-                ]
-
-                assert speeds, f"No speed data received for {name}"
-                speed = max(speeds, key=abs) * physical_sign
-                self.log(f"{name}: speed = {speed:.2f}")
-                assert abs(speed) >= self.MIN_SPEED, (
-                    f"{name} speed too low: {speed:.2f} < {self.MIN_SPEED}"
-                )
-                self.log(f"[OK] {name}", color="green")
-
-                #await asyncio.sleep(2)
-
-                #output = await self.shell(
-                #    "docker exec -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp ros /ros_entrypoint.sh "
-                #    "ros2 topic echo /hardware/status --once",
-                #    timeout=5,
-                #)
-
-                #val = []
-
-                #for line in output.splitlines():
-                #    line = line.strip()
-
-                #    if line.startswith("- "):
-                #        val.append(float(line[2:]))
-                #speed = val[speed_idx]
-                #self.log(f"{name}: speed = {speed:.2f}")
-
-                #self.log(f"[OK] {name}", color="green")
-
-                #await self.shell(
-                #    "docker exec -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp "
-                #    "ros /ros_entrypoint.sh "
-                #    "ros2 topic pub --once "
-                #    "/hardware/wheel_targets "
-                #    "std_msgs/msg/Float32MultiArray "
-                #    "'{data: [0.0, 0.0, 0.0, 0.0]}'",
-                #    timeout=5,
-                #)
-
-                #await asyncio.sleep(0.5)
-
-        finally:
-            await self.stop()
-
-        return True
+        return ok
 
 
 class MoveTest(BaseTest):
@@ -720,45 +649,6 @@ class MoveTest(BaseTest):
             await self.stop()
         return True
 
-
-# Original DockerInjectTest draft:
-#
-#class DockerInjectTest(BaseTest):
-#    INJECT = """
-#import rclpy
-#from rclpy.node import Node
-#from geometry_msgs.msg import Twist
-#from std_msgs.msg import Float32MultiArray
-#from collections import defaultdict
-#import json
-#import sys
-#
-#DURATION = {duration}
-#PUB_DATA = {pub_data}
-#SUB_TOPICS = {sub_topics}
-#SUB_DATA = defaultdict(list)
-#
-#rclpy.init()
-#node = Node('test_inject_node')
-#
-#subs = {}
-#
-#sub = node.create_subscription(String, '{target_topic}', cb, 10)
-#
-## Spin up to 10 times to capture a message rapidly
-#for _ in range(10):
-#    rclpy.spin_once(node, timeout_sec=0.1)
-#    if captured_data is not None:
-#        break
-#
-## Format output as JSON and stream it back via stdout
-#print(json.dumps({{"status": "success", "data": captured_data}}))
-#rclpy.shutdown()
-#    """
-#
-#    async def test(self):
-#
-
 # ----------------------------------------------------------------
 
 
@@ -786,6 +676,15 @@ INTRO = """
 """
 
 HOSTNAME = socket.gethostname()
+TESTS = [
+    USBTest,
+    CameraTest,
+    SpeakerMicTest,
+    HWStatusTest,
+    MotorsTest,
+    MoveTest,
+    DockerROSTest,
+]
 
 
 @ui.page("/tests", favicon="✅")
@@ -810,7 +709,7 @@ def main_page():
 
                 ui.separator()
 
-                for test_class in BaseTest.tests.keys():
+                for test_class in TESTS:
                     test = test_class()
                     test_instances.append(test)
 
@@ -837,7 +736,7 @@ def main_page():
 # ----------------------------------------------------------------
 
 LINKS = [
-    ("Foxglove", "category", "https://foxglove.robotics-lab.ru/?ds=foxglove-websocket&ds.url=ws%3A%2F%2F{ip}%3A8765"),
+    ("Foxglove", "category", "https://foxglove-ssl.robotics-lab.ru/?ds=foxglove-websocket&ds.url=ws%3A%2F%2F{ip}%3A8765"),
     ("Jupyter Lab", "code", "http://{ip}:8080"),
     ("Terminal (host)", "terminal", "http://{ip}:8100"),
     ("Terminal (docker)", "terminal", "http://{ip}:8200"),

@@ -15,6 +15,7 @@ class PacketType(IntEnum):
     TOF = 3
     CONTROL = 4
     PID = 5
+    HOST_STATUS = 6
 
 
 class MotorState(ctypes.Structure):
@@ -100,6 +101,37 @@ class ControlPacket(ctypes.Structure):
         fields = {name: getattr(self, name) for name, _ in self._fields_}
         return f"{self.__class__.__name__}({fields})"
 
+class HostNetwork(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("name", ctypes.c_char * 4),
+        ("ip", ctypes.c_char * 15),
+    ]
+
+class HostLoad(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("mem", ctypes.c_float),
+        ("cpu", ctypes.c_float),
+        ("npu", ctypes.c_float),
+        ("temp", ctypes.c_float),
+    ]
+
+class HostStatusPacket(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("networks", HostNetwork * 3),
+        ("load", HostLoad),
+        ("hotspot_mode", ctypes.c_bool)
+    ]
+
+    def __repr__(self):
+        return str({
+            "networks": list(self.networks),
+            "load": self.load
+        })
+
+
 
 def read_packet(ser: Serial):
     try:
@@ -128,6 +160,8 @@ def write_packet(ser: Serial, packet):
         msg_type = PacketType.CONTROL
     elif isinstance(packet, PidState):
         msg_type = PacketType.PID
+    elif isinstance(packet, HostStatusPacket):
+        msg_type = PacketType.HOST_STATUS
     else:
         raise RuntimeError(f"Unknown packet type: {type(packet)}")
 

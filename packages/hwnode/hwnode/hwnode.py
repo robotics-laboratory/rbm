@@ -7,6 +7,7 @@ from std_msgs.msg import Float32MultiArray, Header
 from sensor_msgs.msg import Imu, PointCloud2, PointField
 from threading import Thread
 from hwnode.vl_lidar_reader import compute_zone_angles, distances_to_points
+from hwnode.hostctrl import HostBridge
 from hwnode import proto
 from dataclasses import dataclass
 import math
@@ -53,7 +54,8 @@ class HardwareNode(Node):
         self.last_feedback: Feedback = None
         self.last_cmd_time = self.get_clock().now()
         self.ser = Serial(port=PORT, baudrate=SPEED, timeout=0.5)
-        self.get_logger().info("Serial подключен")
+        self.get_logger().info(f"Serial connected: {PORT} @ {SPEED}")
+        self.host_bridge = HostBridge(callback=self.on_host_status, logger=self.get_logger())
         
         self.control_timer = self.create_timer(1.0 / CONTROL_HZ, self.update)
         self.cmd_sub = self.create_subscription(Twist, "/cmd_vel", self.cmd_callback, 1)
@@ -69,6 +71,9 @@ class HardwareNode(Node):
         self.tof_tan_lookup = compute_zone_angles()
         self.read_thread = Thread(target=self.read_loop, daemon=True)
         self.read_thread.start()
+
+    def on_host_status(self, status: proto.HostStatusPacket):
+        proto.write_packet(self.ser, status)
 
     def numpy_to_pointcloud2(self, points, frame_id="tof_lidar"):
         fields = [

@@ -8,30 +8,10 @@ import json
 import sys
 
 
-DURATION = 10.0
-PUB_DATA = [
-    {
-        "topic": "/cmd_vel",
-        "type": "geometry_msgs.msg.Twist",
-        "data": [
-            [0.0, {"linear": {"x": 0.2}}],
-            [2.0, {"linear": {"x": 0.0}}],
-            [2.5, {"angular": {"z": 1.5}}],
-            [4.5, {"angular": {"z": 0.0}}],
-            [5.0, {"linear": {"x": 0.2}}],
-            [7.0, {"linear": {"x": 0.0}}],
-            [7.5, {"angular": {"z": -1.5}}],
-            [9.5, {"angular": {"z": 0.0}}],
-        ]
-    }
-]
-SUB_TOPICS = [
-    ["/hardware/status", "std_msgs.msg.Float32MultiArray"],
-]
-
-#DURATION = {duration}
-#PUB_DATA = {pub_data}
-#SUB_TOPICS = {sub_topics}
+CONFIG = json.loads(input())
+DURATION = CONFIG["duration"]
+PUB_DATA = CONFIG["pub_data"]
+SUB_TOPICS = CONFIG["sub_topics"]
 SUB_DATA = defaultdict(list)
 
 rclpy.init()
@@ -63,7 +43,6 @@ start = time.perf_counter()
 while True:
     rclpy.spin_once(node, timeout_sec=0.1)
     ts = time.perf_counter() - start
-    #print(f"ts: {ts:.3f}")
     if ts > DURATION: break
     for i, pub_data in enumerate(PUB_DATA):
         next_index = next_pub_index[i]
@@ -71,20 +50,17 @@ while True:
             pub_ts, data = float("+inf"), None
         else:
             pub_ts, data = pub_data["data"][next_index]
-        #print(f"pub ts: {pub_ts:.3f}, ts: {ts:.3f}")
         if ts >= pub_ts:
             type, pub = pubs[pub_data["topic"]]
             msg = type()
             set_message_fields(msg, data)
             pub.publish(msg)
-            #print(f"pub {pub_data['topic']}, index {next_pub_index[i]}, ts {pub_ts:.3f}: {msg}")
             next_pub_index[i] += 1
             pub_last_ts[i] = ts
             pub_last_msg[i] = msg
         elif pub_last_ts[i] is not None and (ts - pub_last_ts[i]) >= 0.1:
             msg = pub_last_msg[i]
             pub.publish(msg)
-            #print(f"pub {pub_data['topic']}, index {next_pub_index[i]}, ts {pub_ts:.3f}: {msg}")
             pub_last_ts[i] = ts
 
 print(json.dumps(SUB_DATA))
