@@ -16,8 +16,20 @@ public:
 		INFO,
 		SENSOR,
 		ENERGY,
-		TESTS
+		DO
 	};
+
+	enum class HostAct : uint8_t {
+		NONE,
+		RESTART,
+		OFF
+	};
+
+	HostAct takeHostAct() {
+		HostAct act = host_act_;
+		host_act_ = HostAct::NONE;
+		return act;
+	}
 
 	Screen(TwoWire& wire, SemaphoreHandle_t& wireMutex, uint8_t address, uint8_t btnA, uint8_t btnB, Imu& imu, Tof& tof, Ina& ina) : wire_(wire), wireMutex_(wireMutex), address_(address), btnA_(btnA), btnB_(btnB), button_one_(btnA, true), button_two_(btnB, true), imu_(imu), tof_(tof), ina_(ina), u8g2_(U8G2_R0, U8X8_PIN_NONE) {
 		instance_ = this;
@@ -78,7 +90,7 @@ public:
 				case Page::ENERGY:
 					drawEnergy();
 					break;
-				case Page::TESTS:
+				case Page::DO:
 					drawTests();
 					break;
 			}
@@ -92,7 +104,7 @@ public:
     		}
 	}
 
-	void updateButton() {	
+	void updateButton() {
 		while (true) {
 			button_one_.tick();
 			button_two_.tick();
@@ -110,6 +122,14 @@ public:
 					}
 				}
 
+				if (page_ == Page::DO) {
+					if (do_selected_ == 0) {
+						do_selected_ = 1;
+					} else {
+						do_selected_--;
+					}
+				}
+
 				button_one_click_ = false;
 			}
 
@@ -118,6 +138,14 @@ public:
 					selected_++;
 					if (selected_ >= MENU_ITEMS) {
 						selected_ = 0;
+					}
+				}
+
+
+				if (page_ == Page::DO) {
+					do_selected_++;
+					if (do_selected_ >= 2) {
+						do_selected_ = 0;
 					}
 				}
 				button_two_click_ = false;
@@ -136,8 +164,15 @@ public:
 							page_ = Page::ENERGY;
 							break;
 						case 3:
-							page_ = Page::TESTS;
+							page_ = Page::DO;
+							do_selected_ = 0;
 							break;
+					}
+				} else if (page_ == Page::DO) {
+					if (do_selected_ == 0) {
+						host_act_ = HostAct::RESTART;
+					} else if (do_selected_ == 1) {
+						host_act_ = HostAct::OFF;
 					}
 				}
 				button_one_long_check_ = false;
@@ -154,9 +189,23 @@ public:
 		}
 	}
 
-	void setNetworkInfo(const String& ip, const String& network) {
-		ip_ = ip;
-		network_ = network;
+	void setNetworkInfo(uint8_t idx, const char* name, const char* ip) {
+		if (idx >= 3) {
+			return;
+		}
+
+		 memcpy(host_info_.networks[idx].name, name, 4);
+		 host_info_.networks[idx].name[4] = '\0';
+
+		 memcpy(host_info_.networks[idx].ip, ip, 15);
+		 host_info_.networks[idx].ip[15] = '\0';
+	}
+
+	void setHostLoad(float mem, float cpu, float npu, float temp) {
+		host_info_.hostload.mem = mem;
+		host_info_.hostload.cpu = cpu;
+		host_info_.hostload.npu = npu;
+		host_info_.hostload.temp = temp;
 	}
 
 	bool isInit() const {
@@ -175,15 +224,53 @@ public:
 private:
 	static constexpr uint8_t MENU_ITEMS = 4;
 
+	struct DisplayNetwork {
+		char name[5];
+		char ip[16];
+	};
+
+	struct __attribute__((packed)) HostLoad {
+		float mem;
+		float cpu;
+		float npu;
+		float temp;
+	};
+
+	struct HostInfo {
+		DisplayNetwork networks[3];
+		HostLoad hostload;
+	};
+
+	HostInfo host_info_{};
+
+	void updateNetwork() {
+		if (millis() - last_network_ < NETWORK_SWITCH_MS) {
+			return;
+		}
+
+		last_network_ = millis();
+
+		for (uint8_t i = 0; i < 3; ++i) {
+			curr_network_ = (curr_network_ + 1) % 3;
+
+			if (host_info_.networks[curr_network_].name[0] != '\0') {
+				return;
+			}
+		}
+	}
+
 	volatile Page page_ = Page::MENU;
 	volatile uint8_t selected_ = 0;
+	volatile HostAct host_act_ = HostAct::NONE;
+	volatile uint8_t do_selected_ = 0;
+
 
 	void drawMenu() {
 		const char* items[MENU_ITEMS] = {
 			"Info",
 			"Sensor",
 			"Energy",
-			"Tests"
+			"Do"
 		};
 
 		for (uint8_t i = 0; i < MENU_ITEMS; ++i) {
@@ -205,19 +292,31 @@ private:
 		}
 	}
 
+	//0 убрать надо будет проверять какая из них активная, условным не пустым именем
 	void drawInfo() {
+		updateNetwork();
+
 		u8g2_.setCursor(0, 12);
-        	u8g2_.print("Info");
+        	u8g2_.print(host_info_.networks[curr_network_].name);
+		u8g2_.print(": ");
+		u8g2_.print(host_info_.networks[curr_network_].ip);
 
         	u8g2_.setCursor(0, 28);
-        	u8g2_.print("IP:");
-        	u8g2_.print(ip_);
+        	u8g2_.print("CPU:");
+        	u8g2_.print(host_info_.hostload.cpu, 0);
+		u8g2_.print("%");
 
         	u8g2_.setCursor(0, 44);
-        	u8g2_.print("Net:");
+        	u8g2_.print("Ram: ");
+		u8g2_.print(host_info_.hostload.mem, 0);
+		u8g2_.print("%");
 
         	u8g2_.setCursor(0, 60);
-        	u8g2_.print(network_);
+		u8g2_.print("T: ");
+        	u8g2_.print(host_info_.hostload.temp, 0);
+		u8g2_.print(" NPU:");
+		u8g2_.print(host_info_.hostload.npu, 0);
+		u8g2_.print("%");
 	}
 
 	void drawSensors() {
@@ -260,23 +359,29 @@ private:
 	}
 
 	void drawTests() {
-		const auto& dmp = imu_.getQuat();
-		
-		u8g2_.setCursor(0, 12);
-		u8g2_.print("w:");
-		u8g2_.print(dmp.w, 2);
+		const char* items[2] = {
+			"Restart",
+			"Off"
+		};
 
-		u8g2_.setCursor(0, 28);
-		u8g2_.print("x:");
-		u8g2_.print(dmp.x, 2);
+		for (uint8_t i = 0; i < 2; ++i) {
+			const int y = i * 16;
 
-		u8g2_.setCursor(0, 44);
-		u8g2_.print("y:");
-		u8g2_.print(dmp.y, 2);
+			if (i == do_selected_) {
+				u8g2_.setDrawColor(1);
+				u8g2_.drawBox(0, y, 128, 16);
 
-		u8g2_.setCursor(0, 60);
-		u8g2_.print("z:");
-		u8g2_.print(dmp.z, 2);
+				u8g2_.setDrawColor(0);
+				u8g2_.setCursor(5, y + 12);
+				u8g2_.print(items[i]);
+
+				u8g2_.setDrawColor(1);
+			} else {
+				u8g2_.setDrawColor(1);
+				u8g2_.setCursor(5, y + 12);
+				u8g2_.print(items[i]);
+			}
+		}
 	}
 
 	bool i2cCheck(TwoWire& bus, uint8_t address) {
@@ -340,9 +445,10 @@ private:
 
     	volatile uint8_t check_1_ = 0;
     	volatile uint8_t check_2_ = 0;
-
-	String ip_ = "N/A";
-	String network_ = "N/A";
-
+	
+	static constexpr uint32_t NETWORK_SWITCH_MS = 3000;
+	uint8_t curr_network_ = 0;
+	uint32_t last_network_ = 0;
+	
     	inline static Screen* instance_ = nullptr;
 };

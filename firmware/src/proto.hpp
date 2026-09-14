@@ -6,6 +6,7 @@
 #define PACKETIZER_USE_CRC_AS_DEFAULT
 #include <Packetizer.h>
 
+#include "config.hpp"
 #include "motor.hpp"
 #include "imu.hpp"
 #include "tof.hpp"
@@ -17,20 +18,18 @@
 #define MSG_TOF 3
 #define MSG_MOT_IN 4
 #define MSG_PID_CONF 5
+#define MSG_HOST_STATUS 6
+#define MSG_HOST_CONTROL 7
+#define MSG_GET_CONFIG 8
+#define MSG_SET_CONFIG 9
+#define MSG_SAVE_CONFIG 10
+
 
 struct __attribute__((packed)) ControlPayloadIn {
 	float front_left_speed;
 	float front_right_speed;
 	float rear_left_speed;
 	float rear_right_speed;
-};
-
-struct __attribute__((packed)) PIDConfigIn {
-	float kp;
-    float ki;
-    float kd;
-    float limit;
-    float lpf_tf;
 };
 
 struct __attribute__((packed)) MotStat {
@@ -82,6 +81,36 @@ struct __attribute__((packed)) TofPayloadOut {
 	uint8_t status[TOF_ZONES];
 };
 
+struct __attribute__((packed)) HostNetwork {
+	char name[4];
+	char ip[15];
+};
+
+struct __attribute__((packed)) HostLoad {
+	float mem;
+	float cpu;
+	float npu;
+	float temp;
+};
+
+
+struct __attribute__((packed)) HostStatusPayloadIn {
+	HostNetwork networks[3];
+	HostLoad hostload;
+	bool hotspot_mode;
+};
+
+struct __attribute__((packed)) HostControlPayloadOut {
+	char act[16];
+};
+
+struct __attribute__((packed)) SetConfig {
+	uint8_t mask;
+	Config new_config;
+};
+
+
+
 #define MAX_PAYLOAD_SIZE sizeof(TofPayloadOut)
 
 class Proto {
@@ -116,6 +145,57 @@ public:
                 	);
     		});
 
+		Packetizer::subscribe(serial_, MSG_HOST_STATUS, [this](const uint8_t* data, const size_t size) {
+			if (size != sizeof(HostStatusPayloadIn)) return;
+        		memcpy(&host_pack_in_, data, sizeof(host_pack_in_));
+    			
+			for (uint8_t i = 0; i < 3; ++i) {
+				screen_.setNetworkInfo(i, host_pack_in_.networks[i].name, host_pack_in_.networks[i].ip);
+			}
+			screen_.setHostLoad(host_pack_in_.hostload.mem, host_pack_in_.hostload.cpu, host_pack_in_.hostload.npu, host_pack_in_.hostload.temp);
+
+			host_status_once_ = true;
+		});
+
+		Packetizer::subscribe(serial_, MSG_GET_CONFIG, [this](const uint8_t* data, const size_t size) {
+			sendPacket(MSG_GET_CONFIG, &config, sizeof(config));
+		});
+
+		Packetizer::subscribe(serial_, MSG_SET_CONFIG, [this](const uint8_t* data, const size_t size) {
+			if (size != sizeof(SetConfig)) return;
+			memcpy(&set_config, data, sizeof(set_config));
+
+			if (set_config.mask & (1 << 0)) {
+				memcpy(config.robot_id,
+					set_config.new_config.robot_id,
+					sizeof(config.robot_id)
+				);
+				config.robot_id[sizeof(config.robot_id) - 1] = '\0';
+			}
+
+			if (set_config.mask & (1 << 1)) {
+				config.encoder_cpr = set_config.new_config.encoder_cpr;
+			}
+
+			if (set_config.mask & (1 << 2)) {
+				config.pid = set_config.new_config.pid;
+			}
+
+			if (set_config.mask & (1 << 3)) {
+				config.direction_mot = set_config.new_config.direction_mot;
+			}
+
+			if (set_config.mask & (1 << 4)) {
+				config.direction_enc = set_config.new_config.direction_enc;
+			}
+
+			motors_.applyConfig(config);
+		});
+
+		Packetizer::subscribe(serial_, MSG_SAVE_CONFIG, [this](const uint8_t* data, const size_t size) {
+			saveConfig();
+		});
+
 		PROTO_INIT_OK_ = true;
 		return PROTO_INIT_OK_;
 	}
@@ -133,7 +213,7 @@ public:
 				sendPacket(MSG_STAT, &status_pack_out_, sizeof(status_pack_out_));      
         
 			}
-			if (imu_.isInit() && now - lastImu >= 20) {
+			if (imu_.isInit() && now - lastImu >= 18) {
 		 		lastImu = now;
 				updateImuPacket();
 		 		sendPacket(MSG_IMU, &imu_pack_out_, sizeof(imu_pack_out_));
@@ -145,7 +225,20 @@ public:
 		 		sendPacket(MSG_TOF, &tof_pack_out_, sizeof(tof_pack_out_));
 			}
 
-		vTaskDelay(pdMS_TO_TICKS(10));
+			auto act = screen_.takeHostAct();
+			if (act != Screen::HostAct::NONE) {
+				memset(host_control_pack_out_.act, 0, sizeof(host_control_pack_out_.act));
+
+				if (act == Screen::HostAct::RESTART) {
+					strcpy(host_control_pack_out_.act, "restart");
+				} else if (act == Screen::HostAct::OFF) {
+					strcpy(host_control_pack_out_.act, "off");
+				}
+
+				sendPacket(MSG_HOST_CONTROL, &host_control_pack_out_, sizeof(host_control_pack_out_));
+			}
+
+		vTaskDelay(pdMS_TO_TICKS(5));
 		}
 	}
 
@@ -168,6 +261,15 @@ public:
 	static void packInTask(void* arg) {
 		Proto* proto = static_cast<Proto*>(arg);
 		proto->updatePackIn();
+	}
+
+
+	bool hasHostStatus() const {
+		return host_status_once_;
+	}
+
+	const HostStatusPayloadIn& getHostStatus() const {
+		return host_pack_in_;
 	}
 private:
 	void sendPacket(uint8_t msg_type, const void* payload, size_t payloadSize) {
@@ -271,10 +373,15 @@ private:
 
     	ControlPayloadIn control_pack_in_{};
     	PIDConfigIn pid_config_in_{};
+	HostStatusPayloadIn host_pack_in_{};
 
     	StatusPayloadOut status_pack_out_{};
     	ImuPayloadOut imu_pack_out_{};
     	TofPayloadOut tof_pack_out_{};
+	HostControlPayloadOut host_control_pack_out_{};
+
+	SetConfig set_config{};
 
     	bool PROTO_INIT_OK_ = false;
+		bool host_status_once_ = false;
 };

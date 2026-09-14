@@ -16,6 +16,10 @@ class PacketType(IntEnum):
     CONTROL = 4
     PID = 5
     HOST_STATUS = 6
+    HOST_CONTROL = 7
+    GET_CONFIG = 8
+    SET_CONFIG = 9
+    SAVE_CONFIG = 10
 
 
 class MotorState(ctypes.Structure):
@@ -131,6 +135,55 @@ class HostStatusPacket(ctypes.Structure):
             "load": self.load
         })
 
+class HostControlPacket(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("act", ctypes.c_char * 16),
+    ]
+
+    def __repr__(self):
+        return self.act.decode("utf-8", errors="ignore").rstrip("\x00") 
+
+#Fixme переписать, когда будет норм структура на стороне прошивки
+# Переименовал моторы, но структуру все равно поменять
+class Dir(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("front_left", ctypes.c_int8),
+        ("front_right", ctypes.c_int8),
+        ("rear_left", ctypes.c_int8),
+        ("rear_right", ctypes.c_int8),
+    ]
+
+class ConfigV0(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("config_v", ctypes.c_uint8),
+        ("firmware_v", ctypes.c_uint8),
+        ("robot_id", ctypes.c_char * 16),
+        ("encoder_cpr", ctypes.c_uint32),
+        ("pids", PidState),
+        ("direction_mot", Dir),
+        ("direction_enc", Dir)
+    ]
+
+class SetConfig(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("mask", ctypes.c_uint8),
+        ("new_config", ConfigV0),
+    ]
+
+
+def ctypes_to_dict(obj):
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", errors="ignore")
+    elif isinstance(obj, ctypes.Structure):
+        return {field: ctypes_to_dict(getattr(obj, field)) for field, _ in obj._fields_}
+    elif isinstance(obj, ctypes.Array):
+        return [ctypes_to_dict(element) for element in obj]
+    else:
+        return obj
 
 
 def read_packet(ser: Serial):
@@ -151,6 +204,11 @@ def read_packet(ser: Serial):
             return type, ImuPacket.from_buffer_copy(payload)
         elif type == PacketType.TOF:
             return type, TofPacket.from_buffer_copy(payload)
+        elif type == PacketType.HOST_CONTROL:
+            return type, HostControlPacket.from_buffer_copy(payload)
+        elif type == PacketType.GET_CONFIG:
+            return type, ConfigV0.from_buffer_copy(payload)
+
     except Exception as err:
         logging.error(f"PROTO ERR: {err}")
 
@@ -162,12 +220,22 @@ def write_packet(ser: Serial, packet):
         msg_type = PacketType.PID
     elif isinstance(packet, HostStatusPacket):
         msg_type = PacketType.HOST_STATUS
+    elif isinstance(packet, SetConfig):
+        msg_type = PacketType.SET_CONFIG
     else:
         raise RuntimeError(f"Unknown packet type: {type(packet)}")
 
     payload = bytes(packet)
     crc = CRC.calc(payload).to_bytes(1, 'little')
     frame = cobs.encode(msg_type.to_bytes(1, 'little') + payload + crc) + b'\x00'
+    ser.write(frame)
+    ser.flush()
+
+
+# FIXME: Сделать универсальную функцию (объединить с write_packet)
+def write_null_packet(ser : Serial, msg_type: PacketType, payload : bytes = b""):
+    crc = CRC.calc(payload).to_bytes(1, "little")
+    frame = cobs.encode(msg_type.to_bytes(1, "little") + payload + crc) + b"\x00"
     ser.write(frame)
     ser.flush()
 
@@ -179,7 +247,18 @@ if __name__ == "__main__":
     PORT = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
     SPEED = 921600
     ser = Serial(port=PORT, baudrate=SPEED)
-    
+    print("START") 
+    while True:
+        ret = read_packet(ser)
+
+        if ret is None:
+            continue
+
+        packet_type, packet = ret
+
+        if packet_type == PacketType.HOST_CONTROL:
+            print(f"RECV <<< {packet_type.name}: {packet}")
+
     def send_speeds(a, b, c, d):
         pack = ControlPacket(float(a), float(-b), float(c), float(-d))
         print(f"SENDING >>> {pack}")

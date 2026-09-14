@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 
+#include "config.hpp"
 #include "motor.hpp"
 #include "imu.hpp"
 #include "tof.hpp"
@@ -27,6 +28,8 @@ void setup() {
 	    		delay(1000);
 		}
     	}
+
+	loadConfig();
 
 	static Motors motors;
 

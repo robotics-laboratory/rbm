@@ -96,7 +96,7 @@ public:
 			}
 
         		uint32_t now = micros();
-        		if ((now - last_ts >= 100000) || (now < last_ts)) {
+        		if ((now - last_ts >= 20000) || (now < last_ts)) {
             			if (xSemaphoreTake(wireMutex_, pdMS_TO_TICKS(20)) == pdTRUE) {
 	        			myICM_.getAGMT();
 	    

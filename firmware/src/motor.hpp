@@ -1,5 +1,6 @@
 #pragma once
 
+#include "config.hpp"
 #include <Arduino.h>
 #include <SimpleFOC.h>
 #include "ESP32HWEncoderFix.h"
@@ -82,6 +83,8 @@ public:
 		initMotorStack('C', motor_c_, driver_c_, encoder_c_);
 		initMotorStack('D', motor_d_, driver_d_, encoder_d_);
 		
+		applyConfig(config);
+
     		MOTORS_INIT_OK_ = true;
 		return MOTORS_INIT_OK_;
 	}
@@ -106,10 +109,10 @@ public:
 	}
 
 	void setTargets(float front_left, float front_right, float rear_left, float rear_right) {
-		motor_a_.target = front_left;
-		motor_b_.target = rear_left;
-		motor_c_.target = rear_right;
-		motor_d_.target = front_right;
+		motor_a_.target = front_left * motor_dir_a_;
+		motor_b_.target = rear_left * motor_dir_b_;
+		motor_c_.target = rear_right * motor_dir_c_;
+		motor_d_.target = front_right * motor_dir_d_;
 	}
 
 	void setPid(float kp, float ki, float kd, float limit, float lpf_tf) {
@@ -121,6 +124,20 @@ public:
             		motors[i]->PID_velocity.output_ramp = limit;
             		motors[i]->LPF_velocity.Tf = lpf_tf;
 		}
+	}
+
+	void applyConfig(const Config& cfg) {
+		setPid(cfg.pid.kp, cfg.pid.ki, cfg.pid.kd, cfg.pid.limit, cfg.pid.lpf_tf);
+		
+		motor_dir_a_ = cfg.direction_mot.motor_one;
+		motor_dir_b_ = cfg.direction_mot.motor_two;
+		motor_dir_c_ = cfg.direction_mot.motor_three;
+		motor_dir_d_ = cfg.direction_mot.motor_four;
+
+		motor_a_.sensor_direction = (cfg.direction_enc.motor_one == 1) ? Direction::CW : Direction::CCW;
+	motor_b_.sensor_direction = (cfg.direction_enc.motor_two == 1) ? Direction::CW : Direction::CCW;
+	motor_c_.sensor_direction = (cfg.direction_enc.motor_three == 1) ? Direction::CW : Direction::CCW;
+	motor_d_.sensor_direction = (cfg.direction_enc.motor_four == 1) ? Direction::CW : Direction::CCW;
 	}
 
 	CustomMotor& getMotorA() {
@@ -190,4 +207,9 @@ private:
 
 
 	bool MOTORS_INIT_OK_ = false;
+	
+	int8_t motor_dir_a_ = 1;
+	int8_t motor_dir_b_ = 1;
+	int8_t motor_dir_c_ = 1;
+	int8_t motor_dir_d_ = 1;
 };

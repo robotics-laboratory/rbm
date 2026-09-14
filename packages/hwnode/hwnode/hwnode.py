@@ -3,7 +3,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from serial import Serial
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Float32MultiArray, Header
+from std_msgs.msg import Float32MultiArray, Header, String
 from sensor_msgs.msg import Imu, PointCloud2, PointField
 from threading import Thread
 from hwnode.vl_lidar_reader import compute_zone_angles, distances_to_points
@@ -55,7 +55,12 @@ class HardwareNode(Node):
         self.last_cmd_time = self.get_clock().now()
         self.ser = Serial(port=PORT, baudrate=SPEED, timeout=0.5)
         self.get_logger().info(f"Serial connected: {PORT} @ {SPEED}")
-        self.host_bridge = HostBridge(callback=self.on_host_status, logger=self.get_logger())
+        self.host_bridge = HostBridge(
+            logger=self.get_logger(),
+            on_stats=self.on_host_status,
+            on_get_config=self.on_get_config,
+            on_set_config=self.on_set_config,
+        )
         
         self.control_timer = self.create_timer(1.0 / CONTROL_HZ, self.update)
         self.cmd_sub = self.create_subscription(Twist, "/cmd_vel", self.cmd_callback, 1)
@@ -65,15 +70,25 @@ class HardwareNode(Node):
         self.odom_pub = self.create_publisher(Odometry, "/hardware/odom", 1)
         self.pc2_pub = self.create_publisher(PointCloud2, "/tof/cloud", 10)
         
-        #For tests
         self.wheel_test_sub = self.create_subscription(Float32MultiArray , "/hardware/wheel_targets", self.handle_wheel_targets, 10)
         self.wheel_test_active = False
+
         self.tof_tan_lookup = compute_zone_angles()
         self.read_thread = Thread(target=self.read_loop, daemon=True)
         self.read_thread.start()
 
     def on_host_status(self, status: proto.HostStatusPacket):
         proto.write_packet(self.ser, status)
+
+    def on_get_config(self):
+        self.get_logger().info("hwnode : on_get_config")
+        proto.write_null_packet(self.ser, proto.PacketType.GET_CONFIG)
+
+    def on_set_config(self, config: proto.SetConfig):
+        self.get_logger().info("hwnode : on_set_config")
+        proto.write_packet(self.ser, config)
+        proto.write_null_packet(self.ser, proto.PacketType.SAVE_CONFIG)
+        proto.write_null_packet(self.ser, proto.PacketType.GET_CONFIG)
 
     def numpy_to_pointcloud2(self, points, frame_id="tof_lidar"):
         fields = [
@@ -185,7 +200,11 @@ class HardwareNode(Node):
         )
 
         self.pc2_pub.publish(cloud)
-
+    
+    def handle_host_control(self, payload):
+        act = payload.act.decode("utf-8", errors="ignore").rstrip("\x00")
+        self.get_logger().info(f"HOST ACT: {act}")
+        self.host_bridge.send_act(act)
 
     def handle_wheel_targets(self, msg):
         packet = proto.ControlPacket()
@@ -201,9 +220,15 @@ class HardwareNode(Node):
         else:
             self.wheel_test_active = True
 
-    def read_loop(self):
-        buff = b""
+###########################################################################
 
+    def handle_config(self, payload: proto.ConfigV0):
+        self.get_logger().info(f"HANDLE CONFIG: {payload}")
+        self.host_bridge.send_config(payload)
+
+###########################################################################
+        
+    def read_loop(self):
         while rclpy.ok():
             ret = proto.read_packet(self.ser)
             if ret is None: continue
@@ -214,7 +239,11 @@ class HardwareNode(Node):
                 self.handle_imu(payload)
             elif type == proto.PacketType.TOF:
                 self.handle_tof(payload)
-                 
+            elif type == proto.PacketType.HOST_CONTROL:
+                self.handle_host_control(payload)
+            elif type == proto.PacketType.GET_CONFIG:
+                self.handle_config(payload)
+
     def cmd_callback(self, msg: Twist):
         self.last_cmd_time = self.get_clock().now()
         v = msg.linear.x * LINEAR_GAIN
@@ -273,7 +302,7 @@ class HardwareNode(Node):
         self.v_right = v_right * scale
 
         L, R = self.v_left * 1.0, self.v_right * 1.0
-        A, B, C, D = L, -R, L, -R
+        A, B, C, D = L, R, L, R
 
         pack = proto.ControlPacket(float(A), float(B), float(C), float(D))
         proto.write_packet(self.ser, pack)

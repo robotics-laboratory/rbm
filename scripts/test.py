@@ -6,20 +6,31 @@ import abc
 import json
 from pathlib import Path
 from typing import Callable, ClassVar
-from nicegui import ui
+from fastapi import WebSocket, WebSocketDisconnect
+from nicegui import app, ui
 from starlette.requests import Request
+import subprocess as sp
 from dataclasses import dataclass
 import traceback
 from serial import Serial
+import traceback
+import tempfile
+import logging
+import asyncio
+import psutil
 import socket
 import struct
+import httpx
 import math
 import yaml
+import sys
 import re
 
 
 class BaseTest(abc.ABC):
     name: ClassVar[str] = ...
+    autorun: ClassVar[bool] = True
+    autoclear: ClassVar[bool] = True
     tests: ClassVar[dict] = {}
 
     def __init__(self):
@@ -130,15 +141,21 @@ class BaseTest(abc.ABC):
     async def run(self):
         self.log(f"\r\n===== START: {self.name} =====\r\n", color="yellow")
         try:
-            self.output.clear()
-            self.output.set_visibility(False)
+            if self.autoclear:
+                self.output.clear()
+                self.output.set_visibility(False)
             self.run_btn.disable()
             self.status = "RUNNING"
             res = await self.test()
             self.status = "PASS" if res else "FAIL"
         except AssertionError as err:
             self.log(f"----- ASSERTION FAILED -----\n", color="red")
-            self.log(str(err).replace("\n", "\n\r") + "\n")
+            msg = str(err)
+            if not msg:
+                tb = sys.exc_info()[2]
+                frame = traceback.extract_tb(tb)[-1]
+                msg = frame.line
+            self.log(msg.replace("\n", "\n\r") + "\n")
             self.status = "FAIL"
         except Exception as err:
             self.log(f"----- UNHANDLED TEST ERROR -----\n", color="red")
@@ -147,6 +164,9 @@ class BaseTest(abc.ABC):
         color = "green" if self.status == "PASS" else "red"
         self.log(f"\r\n===== [{self.status}] {self.name} =====", color=color)
         self.run_btn.enable()
+
+    async def mounted(self):
+        pass
 
     @abc.abstractmethod
     async def test(self):
@@ -208,6 +228,7 @@ class SpeakerMicTest(BaseTest):
 
 class DockerROSTest(BaseTest):
     name = "DOCKER + ROS"
+    autorun = False
 
     EXPECTED_NODES = [
         "/hardware_node",
@@ -249,7 +270,7 @@ class DockerROSTest(BaseTest):
         return await self.shell(cmd, check=check, timeout=timeout)
 
     async def _start_container(self):
-        Path("/home/robomarvel/.autostart").touch()
+        Path("/home/robomarvel/robomarvel/.autostart").touch()
 
         state = await self.shell(
             "docker inspect --format '{{.State.Running}}' ros",
@@ -651,6 +672,204 @@ class MoveTest(BaseTest):
 
 # ----------------------------------------------------------------
 
+class WriteFirmware(BaseTest):
+    name = "FLASH FIRMWARE"
+    autorun = False
+    autoclear = False
+
+    DEFAULT_FIRMWARE_URL = "http://100.64.0.1:5000/rbm-v4-firmware-v1.bin"
+    DOCKER_FIRMWARE_PATH = Path("/home/robomarvel/robomarvel/build/firmware.bin")
+    DOCKER_PIO_PYTHON_PATH = Path("/root/.platformio/penv/bin/python")
+
+    async def mounted(self):
+        self.output.set_visibility(True)
+        with self.output:
+            self.url_input = ui.input(label="URL", value=self.DEFAULT_FIRMWARE_URL).classes("w-full").props("dense outlined")
+
+    async def test(self):
+        url = self.url_input.value
+        path = self.DOCKER_FIRMWARE_PATH
+        path.parent.mkdir(exist_ok=True)
+        self.log(f"Firmware URL: {url}")
+        self.log(f"Firmware path: {path}")
+        self.log("Downloading...")
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            path.write_bytes(response.content)
+
+        try:
+            # FIXME: Режим заливки прошивки
+            self.log("Force-stopping hwnode...")
+            await self.docker_shell("pkill -e hwnode")
+            self.log("Uploading...")
+            path = self.DOCKER_FIRMWARE_PATH.relative_to("/home/robomarvel/robomarvel")
+            cmd = f"{self.DOCKER_PIO_PYTHON_PATH} -m esptool --chip esp32 --baud 921600 write-flash -z 0x0 {path}"
+            await self.docker_shell(cmd, timeout=20)
+        finally:
+            self.log("Restarting docker...")
+            await self.shell("docker restart ros")
+        
+        return True
+
+class UpdateConfig(BaseTest):
+    name = "UPDATE ESP CONFIG"
+    autorun = False
+    autoclear = False
+
+    async def mounted(self):
+        self.output.set_visibility(True)
+        
+        with self.output:
+            self.no_config_status = ui.row().classes("w-full items-center justify-after")
+            with self.no_config_status:
+                ui.icon("warning", color="warning").classes("text-lg -mr-2")
+                ui.label("CURRENT CONFIG UNKNOWN")
+                ui.button("REFRESH", on_click=self.update).props("flat").classes("text-blue-500 p-0 min-h-0")
+            
+            self.robot_id = ui.input(label="Robot ID").classes("w-full").props("dense outlined")
+            self.encoder_cpr = ui.number(label="Encoder CPR", min=10, max=10000, precision=0).classes("w-full").props("dense outlined")
+            
+            self.motor_dirs = []
+            ui.label("MOTOR DIRECTIONS").classes("w-full text-xs -mb-4")
+            with ui.element("div").classes("w-full grid grid-rows-1 grid-cols-4 -mb-4"):
+                self.motor_dirs.append(ui.checkbox("FL"))
+                self.motor_dirs.append(ui.checkbox("FR"))
+                self.motor_dirs.append(ui.checkbox("RL"))
+                self.motor_dirs.append(ui.checkbox("RR"))
+                
+            self.encoder_dirs = []
+            ui.label("ENCODER DIRECTIONS").classes("w-full text-xs -mb-4")
+            with ui.element("div").classes("w-full grid grid-rows-1 grid-cols-4"):
+                self.encoder_dirs.append(ui.checkbox("FL"))
+                self.encoder_dirs.append(ui.checkbox("FR"))
+                self.encoder_dirs.append(ui.checkbox("RL"))
+                self.encoder_dirs.append(ui.checkbox("RR"))
+
+        await self.update()
+
+    async def update(self):
+        config = HOSTCTL.esp_config
+        if config is None:
+            self.no_config_status.set_visibility(True)
+            self.robot_id.value = ""
+            self.encoder_cpr.value = None
+            for checkbox in self.motor_dirs + self.encoder_dirs:
+                checkbox.value = False
+        else:
+            self.no_config_status.set_visibility(False)
+            self.robot_id.value = config["robot_id"]
+            self.encoder_cpr.value = config["encoder_cpr"]
+            for i, dir in enumerate(config["direction_mot"].values()):
+                self.motor_dirs[i].value = dir > 0
+            for i, dir in enumerate(config["direction_enc"].values()):
+                self.encoder_dirs[i].value = dir > 0
+
+    async def test(self):
+        robot_id = self.robot_id.value
+        encoder_cpr = self.encoder_cpr.value
+        motor_dirs = [1 if x.value else -1 for x in self.motor_dirs]
+        encoder_dirs = [1 if x.value else -1 for x in self.encoder_dirs]
+        assert robot_id is not None and 1 <= len(robot_id) <= 15
+        assert encoder_cpr is not None and 10 <= encoder_cpr <= 10000
+
+        new_config = {
+            "robot_id": robot_id,
+            "encoder_cpr": encoder_cpr,
+            "direction_mot": motor_dirs,
+            "direction_enc": encoder_dirs,
+        }
+        self.log(f"Config: {new_config}")
+        self.log("Sending new config via hostctl...")
+        assert len(HOSTCTL.clients) >= 1, "hwnode websocket not connected"
+        await HOSTCTL.broadcast({"type": "set-config", "data": new_config})
+        await asyncio.sleep(0.5)
+
+        self.log("Verifying new config...")
+        await self.update()
+        config = HOSTCTL.esp_config
+        assert config["robot_id"] == new_config["robot_id"]
+        assert config["encoder_cpr"] == new_config["encoder_cpr"]
+        assert list(config["direction_mot"].values()) == new_config["direction_mot"]
+        assert list(config["direction_enc"].values()) == new_config["direction_enc"]
+        
+        return True
+
+# ----------------------------------------------------------------
+
+class HostControl:
+    NETWORKS = {"wlan0": "wifi", "eth0": "eth", "tailscale0": "vpn"}
+    
+    def __init__(self):
+        self.clients: list[WebSocket] = []
+        self.esp_config = None
+
+    def log(self, msg: str):
+        print(f"[hostctl] {msg}")
+
+    def get_stats(self):
+        cpu = psutil.cpu_percent(interval=1.0)
+        mem = psutil.virtual_memory().percent
+        bpu = 0.0  # TODO
+        # TODO: Можно частично переписать на парсинг hrut_somstatus
+        temp = int(open('/sys/class/hwmon/hwmon0/temp3_input').read()) / 1000
+        return {"cpu": cpu, "mem": mem, "bpu": bpu, "temp": temp}
+
+    def get_networks(self):
+        addrs = {}
+        for name, if_addrs in psutil.net_if_addrs().items():
+            name = self.NETWORKS.get(name)
+            if name is None: continue
+            for addr in if_addrs:
+                if addr.family == socket.AF_INET:
+                    addrs[name] = addr.address
+                    break
+        keys = list(self.NETWORKS.values())
+        pairs = list(addrs.items())
+        pairs.sort(key=lambda x: keys.index(x[0]))
+        return dict(pairs[:3])
+
+    async def broadcast(self, data: dict):
+        for client in self.clients:
+            try:
+                await client.send_json(data)
+            except Exception as err:
+                self.log(f"broadcast err: {err}")
+
+    async def update_loop(self):
+        while True:
+            try:
+                stats = await asyncio.to_thread(self.get_stats)
+                networks = await asyncio.to_thread(self.get_networks)
+                data = {"type": "stats", "data": {"load": stats, "networks": networks}}
+                await self.broadcast(data)
+            except Exception as err:
+                self.log(f"update loop err: {err}")    
+
+    async def ws_handler(self, websocket: WebSocket):
+        await websocket.accept()
+        self.log("WS client connected")
+        self.clients.append(websocket)
+        await websocket.send_json({"type": "get-config"})
+        try:
+            while True:
+                data = await websocket.receive_json()
+                self.log(f"Incoming message: {data}")
+                # TODO: Handle all incoming commands
+                type, payload = data.get("type"), data.get("data")
+                if type == "config": self.esp_config = payload
+        except WebSocketDisconnect:
+            self.log("WS client disconnected")
+            self.clients.remove(websocket)
+
+HOSTCTL = HostControl()
+app.websocket('/hostctl')(HOSTCTL.ws_handler)
+
+@app.on_startup
+async def on_startup():
+    asyncio.create_task(HOSTCTL.update_loop())
+
+# ----------------------------------------------------------------
 
 class StatusLabel(ui.label):
     COLORS = {
@@ -684,11 +903,14 @@ TESTS = [
     MotorsTest,
     MoveTest,
     DockerROSTest,
+    "-----",
+    WriteFirmware,
+    UpdateConfig,
 ]
 
 
 @ui.page("/tests", favicon="✅")
-def main_page():
+async def main_page():
     ui.dark_mode(value=True)
     ui.query(".nicegui-content").classes("p-0")
     ui.page_title(f"{HOSTNAME.upper()} | TESTS")
@@ -703,13 +925,18 @@ def main_page():
                     async def run_all():
                         run_all_btn.disable()
                         for test in test_instances:
-                            await test.run()
+                            if test.autorun:
+                                await test.run()
                         run_all_btn.enable()
                     run_all_btn = ui.button("RUN ALL", on_click=run_all, icon="play_arrow")
 
                 ui.separator()
 
                 for test_class in TESTS:
+                    if isinstance(test_class, str):
+                        ui.separator()
+                        continue
+                    
                     test = test_class()
                     test_instances.append(test)
 
@@ -723,6 +950,7 @@ def main_page():
                         test.log_func = lambda line: terminal.write(line + "\r\n")
                         test.output = output
                         test.run_btn = btn
+                        await test.mounted()
 
         with splitter.after:
             with ui.column().classes("w-full h-full p-4"):
@@ -772,5 +1000,5 @@ ui.run(
     port=80,
     favicon="✅",
     reconnect_timeout=10,
-    reload=False,
+    reload=True,
 )
