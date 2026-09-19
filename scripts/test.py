@@ -463,9 +463,9 @@ class MotorsTest(BaseTest):
     WHEELS = [
         # name, index, status index, sign
         ("FRONT LEFT", 1, 1),
-        ("FRONT RIGHT", 13, -1),
+        ("FRONT RIGHT", 13, 1),
         ("REAR LEFT", 5, 1),
-        ("REAR RIGHT", 9, -1),
+        ("REAR RIGHT", 9, 1),
     ]
 
     SPEED = 10.0
@@ -630,9 +630,9 @@ class MoveTest(BaseTest):
 
             forward_signs = {
                 "front_left": 1,
-                "front_right": -1,
+                "front_right": 1,
                 "rear_left": 1,
-                "rear_right": -1,
+                "rear_right": 1,
             }
             phases = [
                 ("Forward 1", 0.8, 1.8, forward_signs),
@@ -760,24 +760,43 @@ class UpdateConfig(BaseTest):
             self.no_config_status.set_visibility(False)
             self.robot_id.value = config["robot_id"]
             self.encoder_cpr.value = config["encoder_cpr"]
-            for i, dir in enumerate(config["direction_mot"].values()):
-                self.motor_dirs[i].value = dir > 0
-            for i, dir in enumerate(config["direction_enc"].values()):
-                self.encoder_dirs[i].value = dir > 0
+            motors = config["motors"]
+            names = [
+                "front_left",
+                "front_right",
+                "rear_left",
+                "rear_right",
+            ]
+            for i, name in enumerate(names):
+                self.motor_dirs[i].value = motors[name]["motor_dir"]
+                self.encoder_dirs[i].value = motors[name]["encoder_dir"]
 
     async def test(self):
         robot_id = self.robot_id.value
         encoder_cpr = self.encoder_cpr.value
-        motor_dirs = [1 if x.value else -1 for x in self.motor_dirs]
-        encoder_dirs = [1 if x.value else -1 for x in self.encoder_dirs]
+        
         assert robot_id is not None and 1 <= len(robot_id) <= 15
         assert encoder_cpr is not None and 10 <= encoder_cpr <= 10000
+
+        names = [
+            "front_left",
+            "front_right",
+            "rear_left",
+            "rear_right",
+        ]
+
+        motors = {}
+
+        for i, name in enumerate(names):
+            motors[name] = {
+                "motor_dir": self.motor_dirs[i].value,
+                "encoder_dir": self.encoder_dirs[i].value,
+            }
 
         new_config = {
             "robot_id": robot_id,
             "encoder_cpr": encoder_cpr,
-            "direction_mot": motor_dirs,
-            "direction_enc": encoder_dirs,
+            "motors": motors,
         }
         self.log(f"Config: {new_config}")
         self.log("Sending new config via hostctl...")
@@ -790,8 +809,7 @@ class UpdateConfig(BaseTest):
         config = HOSTCTL.esp_config
         assert config["robot_id"] == new_config["robot_id"]
         assert config["encoder_cpr"] == new_config["encoder_cpr"]
-        assert list(config["direction_mot"].values()) == new_config["direction_mot"]
-        assert list(config["direction_enc"].values()) == new_config["direction_enc"]
+        assert config["motors"] == new_config["motors"]
         
         return True
 

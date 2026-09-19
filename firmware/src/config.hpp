@@ -13,52 +13,41 @@ struct __attribute__((packed)) PIDConfigIn {
     	float lpf_tf;
 };
 
-//struct MotorDir {
-//    	bool motor_dir;
-//    	bool encoder_dir;
-//};
+struct __attribute__((packed)) MotorDir {
+    	bool motor_dir;
+    	bool encoder_dir;
+};
 
-//struct __attribute__((packed)) MotorDirConfig {
-//	MotorDir front_left;
-//	MotorDir front_right;
-//	MotorDir rear_left;
-//	MotorDir rear_right;
-//};
-
-struct __attribute__((packed)) Dir {
-	int8_t motor_one; // MotorDir front_left 
-	//uint8_t front_left_enc_dir
-	int8_t motor_two;
-	int8_t motor_three;
-	int8_t motor_four;
+struct __attribute__((packed)) MotorDirConfig {
+	MotorDir front_left;
+	MotorDir front_right;
+	MotorDir rear_left;
+	MotorDir rear_right;
 };
 
 struct __attribute__((packed)) ConfigV1 {
-	uint8_t config_ver;
-	uint8_t firmware_ver;
+	uint32_t config_ver;
+	uint32_t firmware_ver;
 	char robot_id[16];
 	uint32_t encoder_cpr;
 	PIDConfigIn pid;
-	//MotorDirConfig motors;
-	Dir direction_mot; // uint8_t
-	Dir direction_enc;
+	MotorDirConfig motors;
 };
 
-constexpr ConfigV1 DEFAULT_CONFIG = { CONFIG_VERSION, FIRMWARE_VERSION_DEFAULT, "R4-Y0", 330, {0.5f, 5.0f, 0.001f, 500.0f, 0.01f}, {1, -1, 1, -1}, {1, -1, 1, -1} };
 
 using Config = ConfigV1;
 
-//constexpr Config DEFAULT_CONFIG = {
-//		1,
-//		1, 
-//		"rbm-000",
-//		330,
-//		{0.5f, 5.0f, 0.001f, 500.0f, 0.01f},
-//		{{true, true},
-//		{false, false},
-//		{true, true},
-//		{false, false}},
-//};
+constexpr Config DEFAULT_CONFIG = {
+		1,
+		1, 
+		"rbm-000",
+		330,
+		{0.5f, 5.0f, 0.001f, 500.0f, 0.01f},
+		{{true, true},
+		{false, false},
+		{true, true},
+		{false, false}},
+};
 
 
 inline Config config = DEFAULT_CONFIG;
@@ -97,7 +86,7 @@ inline bool loadConfig() {
 	}
 
 	uint32_t stored_v = -1;
-	err = nvs_get_u32(handle, "config_v", &stored_v);
+	err = nvs_get_u32(handle, "config_ver", &stored_v);
 
 	if (err != ESP_OK || stored_v != CONFIG_VERSION) {
 		nvs_close(handle);

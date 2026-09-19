@@ -20,6 +20,7 @@ class PacketType(IntEnum):
     GET_CONFIG = 8
     SET_CONFIG = 9
     SAVE_CONFIG = 10
+    LOG = 11
 
 
 class MotorState(ctypes.Structure):
@@ -146,34 +147,45 @@ class HostControlPacket(ctypes.Structure):
 
 #Fixme переписать, когда будет норм структура на стороне прошивки
 # Переименовал моторы, но структуру все равно поменять
-class Dir(ctypes.Structure):
+class MotorDir(ctypes.Structure):
     _pack_ = 1
     _fields_ = [
-        ("front_left", ctypes.c_int8),
-        ("front_right", ctypes.c_int8),
-        ("rear_left", ctypes.c_int8),
-        ("rear_right", ctypes.c_int8),
+        ("motor_dir", ctypes.c_bool),
+        ("encoder_dir", ctypes.c_bool),
     ]
 
-class ConfigV0(ctypes.Structure):
+class MotorDirConfig(ctypes.Structure):
     _pack_ = 1
     _fields_ = [
-        ("config_v", ctypes.c_uint8),
-        ("firmware_v", ctypes.c_uint8),
+        ("front_left", MotorDir),
+        ("front_right", MotorDir),
+        ("rear_left", MotorDir),
+        ("rear_right", MotorDir),
+    ]
+
+class ConfigV1(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("config_v", ctypes.c_uint32),
+        ("firmware_v", ctypes.c_uint32),
         ("robot_id", ctypes.c_char * 16),
         ("encoder_cpr", ctypes.c_uint32),
-        ("pids", PidState),
-        ("direction_mot", Dir),
-        ("direction_enc", Dir)
+        ("pid", PidState),
+        ("motors", MotorDirConfig),
     ]
 
 class SetConfig(ctypes.Structure):
     _pack_ = 1
     _fields_ = [
         ("mask", ctypes.c_uint8),
-        ("new_config", ConfigV0),
+        ("new_config", ConfigV1),
     ]
 
+class LogPacket(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("message", ctypes.c_char * 192)
+    ]
 
 def ctypes_to_dict(obj):
     if isinstance(obj, bytes):
@@ -207,7 +219,9 @@ def read_packet(ser: Serial):
         elif type == PacketType.HOST_CONTROL:
             return type, HostControlPacket.from_buffer_copy(payload)
         elif type == PacketType.GET_CONFIG:
-            return type, ConfigV0.from_buffer_copy(payload)
+            return type, ConfigV1.from_buffer_copy(payload)
+        elif type == PacketType.LOG:
+            return type, LogPacket.from_buffer_copy(payload)
 
     except Exception as err:
         logging.error(f"PROTO ERR: {err}")

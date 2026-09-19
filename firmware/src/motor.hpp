@@ -129,15 +129,20 @@ public:
 	void applyConfig(const Config& cfg) {
 		setPid(cfg.pid.kp, cfg.pid.ki, cfg.pid.kd, cfg.pid.limit, cfg.pid.lpf_tf);
 		
-		motor_dir_a_ = cfg.direction_mot.motor_one;
-		motor_dir_b_ = cfg.direction_mot.motor_two;
-		motor_dir_c_ = cfg.direction_mot.motor_three;
-		motor_dir_d_ = cfg.direction_mot.motor_four;
+		motor_dir_a_ = cfg.motors.front_left.motor_dir ? 1 : -1;
+		motor_dir_d_ = cfg.motors.front_right.motor_dir ? 1 : -1;
+		motor_dir_b_ = cfg.motors.rear_left.motor_dir ? 1 : -1;
+		motor_dir_c_ = cfg.motors.rear_right.motor_dir ? 1 : -1;
 
-		motor_a_.sensor_direction = (cfg.direction_enc.motor_one == 1) ? Direction::CW : Direction::CCW;
-	motor_b_.sensor_direction = (cfg.direction_enc.motor_two == 1) ? Direction::CW : Direction::CCW;
-	motor_c_.sensor_direction = (cfg.direction_enc.motor_three == 1) ? Direction::CW : Direction::CCW;
-	motor_d_.sensor_direction = (cfg.direction_enc.motor_four == 1) ? Direction::CW : Direction::CCW;
+		encoder_a_.setCpr(cfg.encoder_cpr);
+		encoder_b_.setCpr(cfg.encoder_cpr);
+		encoder_c_.setCpr(cfg.encoder_cpr);
+		encoder_d_.setCpr(cfg.encoder_cpr);
+
+		motor_a_.sensor_direction = cfg.motors.front_left.encoder_dir ? Direction::CW : Direction::CCW;
+		motor_b_.sensor_direction = cfg.motors.rear_left.encoder_dir ? Direction::CW : Direction::CCW;
+		motor_c_.sensor_direction = cfg.motors.rear_right.encoder_dir ? Direction::CW : Direction::CCW;
+		motor_d_.sensor_direction = cfg.motors.front_right.encoder_dir ? Direction::CW : Direction::CCW;
 	}
 
 	CustomMotor& getMotorA() {
@@ -154,6 +159,39 @@ public:
 
 	CustomMotor& getMotorD() {
 		return motor_d_;
+	}
+
+
+	float getLogicalTargetA() const {
+		return motor_a_.getTarget() * motor_dir_a_;
+	}
+
+	float getLogicalTargetB() const {
+		return motor_b_.getTarget() * motor_dir_b_;
+	}
+
+	float getLogicalTargetC() const {
+		return motor_c_.getTarget() * motor_dir_c_;
+	}
+
+	float getLogicalTargetD() const {
+		return motor_d_.getTarget() * motor_dir_d_;
+	}
+
+	float getLogicalVelocityA() const {
+		return motor_a_.getShaftVelocity() * motor_dir_a_;
+	}
+
+	float getLogicalVelocityB() const {
+		return motor_b_.getShaftVelocity() * motor_dir_b_;
+	}
+
+	float getLogicalVelocityC() const {
+		return motor_c_.getShaftVelocity() * motor_dir_c_;
+	}
+
+	float getLogicalVelocityD() const {
+		return motor_d_.getShaftVelocity() * motor_dir_d_;
 	}
 private:
     	void initMotorStack(char c, CustomMotor& motor, DCDriver2PWM& driver, ESP32HWEncoder& encoder) {

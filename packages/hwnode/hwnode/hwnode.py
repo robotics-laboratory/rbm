@@ -3,15 +3,16 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from serial import Serial
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Float32MultiArray, Header, String
+from std_msgs.msg import Float32MultiArray, Header, String, Bool
 from sensor_msgs.msg import Imu, PointCloud2, PointField
-from threading import Thread
+from threading import Thread, Lock
 from hwnode.vl_lidar_reader import compute_zone_angles, distances_to_points
 from hwnode.hostctrl import HostBridge
 from hwnode import proto
 from dataclasses import dataclass
 import math
 import struct
+import time
 import numpy as np
 
 WHEEL_RADIUS = 0.045 / 2  # m
@@ -54,6 +55,15 @@ class HardwareNode(Node):
         self.last_feedback: Feedback = None
         self.last_cmd_time = self.get_clock().now()
         self.ser = Serial(port=PORT, baudrate=SPEED, timeout=0.5)
+        
+        self.serial_lock = Lock()
+
+        self.quiet_mode = False
+        self.quiet_since = None
+
+        self.quiet_sub = self.create_subscription(Bool, "/hardware/quiet_mode", self.quiet_callback, 10)
+        self.quiet_tim = self.create_timer(1.0, self.quiet_watchdog)
+
         self.get_logger().info(f"Serial connected: {PORT} @ {SPEED}")
         self.host_bridge = HostBridge(
             logger=self.get_logger(),
@@ -67,24 +77,67 @@ class HardwareNode(Node):
         self.pid_sub = self.create_subscription(Float32MultiArray, "/hardware/pid", self.pid_callback, 1)
         self.imu_pub = self.create_publisher(Imu, "/hardware/imu", 1)
         self.status_pub = self.create_publisher(Float32MultiArray, "/hardware/status", 1)
-        self.odom_pub = self.create_publisher(Odometry, "/hardware/odom", 1)
-        self.pc2_pub = self.create_publisher(PointCloud2, "/tof/cloud", 10)
+        self.pc2_pub = self.create_publisher(PointCloud2, "tof/cloud", 10)
+        self.odom_pub = self.create_publisher(Odometry, "hardware/odom", 1)
         
         self.wheel_test_sub = self.create_subscription(Float32MultiArray , "/hardware/wheel_targets", self.handle_wheel_targets, 10)
         self.wheel_test_active = False
+
+        self.errors_pub = self.create_publisher(String, "/hardware/errors", 10)
 
         self.tof_tan_lookup = compute_zone_angles()
         self.read_thread = Thread(target=self.read_loop, daemon=True)
         self.read_thread.start()
 
+
+    def quiet_callback(self, msg: Bool):
+        if msg.data:
+            self.enable_quiet_mode()
+        else:
+            self.disable_quiet_mode()
+
+    def enable_quiet_mode(self):
+        self.get_logger().warning("QUIET MODE: ONE")
+
+        self.quiet_mode = True
+        self.quiet_since = time.monotonic()
+        
+        if self.ser.is_open:
+            self.ser.close()
+
+    def disable_quiet_mode(self):
+        if not self.quiet_mode:
+            return
+        if not self.ser.is_open:
+            self.ser.open()
+
+        self.quiet_mode = False
+        self.quiet_since = None
+        self.get_logger().warning("QUIET MODE: OFF")
+
+    def quiet_watchdog(self):
+        if not self.quiet_mode:
+            return
+        if time.monotonic() - self.quiet_since >= 30.0:
+            self.get_logger().warning("QUIET MODE TIMEOUT")
+            self.disable_quiet_mode()
+
     def on_host_status(self, status: proto.HostStatusPacket):
+        if self.quiet_mode:
+            return
         proto.write_packet(self.ser, status)
 
     def on_get_config(self):
+        if self.quiet_mode:
+            return
+
         self.get_logger().info("hwnode : on_get_config")
         proto.write_null_packet(self.ser, proto.PacketType.GET_CONFIG)
 
     def on_set_config(self, config: proto.SetConfig):
+        if self.quiet_mode:
+            return
+
         self.get_logger().info("hwnode : on_set_config")
         proto.write_packet(self.ser, config)
         proto.write_null_packet(self.ser, proto.PacketType.SAVE_CONFIG)
@@ -114,6 +167,16 @@ class HardwareNode(Node):
         msg.data = data
         
         return msg
+
+
+    def handle_log(self, payload):
+        mess = bytes(payload.message)
+        mess = mess.split(b"\x00", 1)[0]
+        mess = mess.decode("utf-8", errors="replace")
+        
+        msg = String()
+        msg.data = mess
+        self.errors_pub.publish(msg)
 
     def handle_status(self, payload):
         status = Float32MultiArray()
@@ -207,7 +270,11 @@ class HardwareNode(Node):
         self.host_bridge.send_act(act)
 
     def handle_wheel_targets(self, msg):
+        if (self.quiet_mode):
+            return
+
         packet = proto.ControlPacket()
+        
 
         packet.front_left = msg.data[0]
         packet.front_right = msg.data[1]
@@ -222,7 +289,7 @@ class HardwareNode(Node):
 
 ###########################################################################
 
-    def handle_config(self, payload: proto.ConfigV0):
+    def handle_config(self, payload: proto.ConfigV1):
         self.get_logger().info(f"HANDLE CONFIG: {payload}")
         self.host_bridge.send_config(payload)
 
@@ -230,6 +297,10 @@ class HardwareNode(Node):
         
     def read_loop(self):
         while rclpy.ok():
+            if (self.quiet_mode):
+                time.sleep(0.1)
+                continue
+
             ret = proto.read_packet(self.ser)
             if ret is None: continue
             type, payload = ret
@@ -243,6 +314,8 @@ class HardwareNode(Node):
                 self.handle_host_control(payload)
             elif type == proto.PacketType.GET_CONFIG:
                 self.handle_config(payload)
+            elif type == proto.PacketType.LOG:
+                self.handle_log(payload)
 
     def cmd_callback(self, msg: Twist):
         self.last_cmd_time = self.get_clock().now()
@@ -259,6 +332,9 @@ class HardwareNode(Node):
         self.target_v, self.target_w = v, w
 
     def pid_callback(self, msg: Float32MultiArray):
+        if self.quiet_mode:
+            return
+
         if len(msg.data) != 5:
             self.get_logger().warn("Bad PID message, expected 5 numbers: [kp, ki, kd, limit, lpf_tf]")
             return
@@ -274,7 +350,7 @@ class HardwareNode(Node):
         return max(current - step, target)
 
     def update(self):
-        if self.wheel_test_active:
+        if self.wheel_test_active or self.quiet_mode:
             return
 
         if (self.get_clock().now() - self.last_cmd_time).nanoseconds * 1e-9 > 0.3:

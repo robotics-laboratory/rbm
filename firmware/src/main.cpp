@@ -1,5 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
+#include <esp_log.h>
+#include <stdarg.h>
 
 #include "config.hpp"
 #include "motor.hpp"
@@ -10,6 +12,18 @@
 #include "led.hpp"
 #include "proto.hpp"
 
+Proto* log_proto = nullptr;
+
+int logV(const char* format, va_list args) {
+	char message[192];
+
+	int len = vsnprintf(message, sizeof(message), format, args);
+
+	if (log_proto != nullptr) {
+		log_proto->sendLog(message);
+	}
+	return len;
+}
 
 void setup() {
 	Serial.begin(921600);
@@ -39,7 +53,9 @@ void setup() {
 	static Screen screen(Wire, wireMutex, 0x3C, 25, 26, imu, tof, ina);
 	static Led led;
 	static Proto proto(Serial, motors, imu, tof, ina, screen);
-
+	proto.initProto();
+	log_proto = &proto;
+	esp_log_set_vprintf(logV);
 
     	motors.initMotors();
     	imu.initImu();
@@ -47,7 +63,8 @@ void setup() {
     	ina.initIna();
     	screen.initScreen();
     	led.initLEDs();
-    	proto.initProto();
+    	
+
 	if (motors.isInit()) {
 		xTaskCreatePinnedToCore(Motors::task, "motors", 2048, &motors, 1, NULL, 1);
 	}

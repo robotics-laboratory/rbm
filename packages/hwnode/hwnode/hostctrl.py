@@ -56,14 +56,24 @@ class HostBridge:
 
     def on_set_config(self, data: dict):
         self.logger.info(f"on set config: {data}")
-        config = proto.ConfigV0()
+        config = proto.ConfigV1()
         config.robot_id = data["robot_id"].encode().ljust(16, b"\x00")
         config.encoder_cpr = int(data["encoder_cpr"])
-        for i, (name, _) in enumerate(proto.Dir._fields_):
-            setattr(config.direction_mot, name, data["direction_mot"][i])
-            setattr(config.direction_enc, name, data["direction_enc"][i])
+
+        motors = [
+            ("front_left", config.motors.front_left),
+            ("front_right", config.motors.front_right),
+            ("rear_left", config.motors.rear_left),
+            ("rear_right", config.motors.rear_right),
+        ]
+
+        for name, motor in motors:
+            motor.motor_dir = data["motors"][name]["motor_dir"]
+            motor.encoder_dir = data["motors"][name]["encoder_dir"]
+
         pack = proto.SetConfig()
         pack.new_config = config
+
         # FIXME: хардкод, поменять на енамы
         pack.mask = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4)
         self.set_config_cb(pack)

@@ -23,7 +23,7 @@
 #define MSG_GET_CONFIG 8
 #define MSG_SET_CONFIG 9
 #define MSG_SAVE_CONFIG 10
-
+#define MSG_LOG 11
 
 struct __attribute__((packed)) ControlPayloadIn {
 	float front_left_speed;
@@ -109,6 +109,9 @@ struct __attribute__((packed)) SetConfig {
 	Config new_config;
 };
 
+struct __attribute__((packed)) LogPayload {
+	char message[192];
+};
 
 
 #define MAX_PAYLOAD_SIZE sizeof(TofPayloadOut)
@@ -116,7 +119,6 @@ struct __attribute__((packed)) SetConfig {
 class Proto {
 public:
 	Proto(HardwareSerial& serial, Motors& motors, Imu& imu, Tof& tof, Ina& ina, Screen& screen) : serial_(serial), motors_(motors), imu_(imu), tof_(tof), ina_(ina), screen_(screen) {
-		
 	}
 
 	bool initProto() {
@@ -131,6 +133,8 @@ public:
                     		control_pack_in_.rear_left_speed,
                     		control_pack_in_.rear_right_speed
                 	);
+
+			last_control_ms_ = millis();
 		});
 
     		Packetizer::subscribe(serial_, MSG_PID_CONF, [this](const uint8_t* data, const size_t size) {
@@ -182,11 +186,18 @@ public:
 			}
 
 			if (set_config.mask & (1 << 3)) {
-				config.direction_mot = set_config.new_config.direction_mot;
+				config.motors.front_left.motor_dir = set_config.new_config.motors.front_left.motor_dir;
+				config.motors.front_right.motor_dir = set_config.new_config.motors.front_right.motor_dir;
+				config.motors.rear_left.motor_dir = set_config.new_config.motors.rear_left.motor_dir;
+				config.motors.rear_right.motor_dir = set_config.new_config.motors.rear_right.motor_dir;
 			}
 
 			if (set_config.mask & (1 << 4)) {
-				config.direction_enc = set_config.new_config.direction_enc;
+				config.motors.front_left.encoder_dir = set_config.new_config.motors.front_left.encoder_dir;
+				config.motors.front_right.encoder_dir = set_config.new_config.motors.front_right.encoder_dir;
+				config.motors.rear_left.encoder_dir = set_config.new_config.motors.rear_left.encoder_dir;
+				config.motors.rear_right.encoder_dir = set_config.new_config.motors.rear_right.encoder_dir;
+			
 			}
 
 			motors_.applyConfig(config);
@@ -238,6 +249,10 @@ public:
 				sendPacket(MSG_HOST_CONTROL, &host_control_pack_out_, sizeof(host_control_pack_out_));
 			}
 
+			if (now - last_control_ms_ >= CONTROL_TIMEOUT_MS) {
+				motors_.setTargets(0,0,0,0);
+			}
+
 		vTaskDelay(pdMS_TO_TICKS(5));
 		}
 	}
@@ -271,6 +286,12 @@ public:
 	const HostStatusPayloadIn& getHostStatus() const {
 		return host_pack_in_;
 	}
+
+	void sendLog(const char* message) {
+		LogPayload log{};
+		snprintf(log.message, sizeof(log.message), "%s", message);
+		sendPacket(MSG_LOG, &log, sizeof(log));
+	}
 private:
 	void sendPacket(uint8_t msg_type, const void* payload, size_t payloadSize) {
 		//uint8_t frame[MAX_PAYLOAD_SIZE];
@@ -294,26 +315,26 @@ private:
 		const auto& motor_d = motors_.getMotorD();
 
 		status_pack_out_.front_left_motor_stat = MotStat{
-				motor_a.getTarget(),
-				motor_a.getShaftVelocity(),
+				motors_.getLogicalTargetA(),
+				motors_.getLogicalVelocityA(),
 				motor_a.getShaftAngle(),
 				motor_a.getVoltageQ()
 		};
 		status_pack_out_.front_right_motor_stat = MotStat{
-				motor_d.getTarget(),
-				motor_d.getShaftVelocity(),
+				motors_.getLogicalTargetD(),
+				motors_.getLogicalVelocityD(),
 				motor_d.getShaftAngle(),
 				motor_d.getVoltageQ()
 		};
 		status_pack_out_.rear_left_motor_stat = MotStat{
-				motor_b.getTarget(),
-				motor_b.getShaftVelocity(),
+				motors_.getLogicalTargetB(),
+				motors_.getLogicalVelocityB(),
 				motor_b.getShaftAngle(),
 				motor_b.getVoltageQ()
 		};
 		status_pack_out_.rear_right_motor_stat = MotStat{
-				motor_c.getTarget(),
-				motor_c.getShaftVelocity(),
+				motors_.getLogicalTargetC(),
+				motors_.getLogicalVelocityC(),
 				motor_c.getShaftAngle(),
 				motor_c.getVoltageQ()
 		};
@@ -381,6 +402,9 @@ private:
 	HostControlPayloadOut host_control_pack_out_{};
 
 	SetConfig set_config{};
+
+	uint32_t last_control_ms_ = 0;
+	static constexpr uint32_t CONTROL_TIMEOUT_MS = 3000;
 
     	bool PROTO_INIT_OK_ = false;
 		bool host_status_once_ = false;
