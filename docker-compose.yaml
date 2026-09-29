@@ -18,3 +18,4 @@ services:
       - ".:/src"
       - "/dev:/dev"
       - "/run/udev:/run/udev:ro"
+      - "/usr/hobot:/usr/hobot:ro"

@@ -12,15 +12,15 @@ hls: false
 srt: false
 
 paths:
-  yolo:
-    source: publisher
-
   cam:
     source: publisher
-    runOnDemand: ffmpeg -f v4l2 -input_format mjpeg -video_size 1920x1080 -framerate 30 -i /dev/video0 -c:v libx264 -preset ultrafast -tune zerolatency -b:v 1M -f rtsp -rtsp_transport tcp rtsp://localhost:$RTSP_PORT/$MTX_PATH
-#    source: rpiCamera
-#    sourceOnDemand: yes
-#    rpiCameraWidth: 1280
-#    rpiCameraHeight: 720
-#    rpiCameraFPS: 30
-#    rpiCameraBitrate: 2000000
+    runOnDemand: |
+        gst-launch-1.0 -e
+        v4l2src device=/dev/video0 !
+        image/jpeg,width=640,height=480,framerate=30/1 !
+        jpegdec !
+        videoconvert !
+        video/x-raw,format=NV12 !
+        hoboth264enc bitrate=2000 !
+        h264parse config-interval=-1 !
+        rtspclientsink location=rtsp://localhost:$RTSP_PORT/$MTX_PATH protocols=tcp
