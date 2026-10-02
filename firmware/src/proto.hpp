@@ -82,7 +82,7 @@ struct __attribute__((packed)) TofPayloadOut {
 };
 
 struct __attribute__((packed)) HostNetwork {
-	char name[4];
+	char name[8];
 	char ip[15];
 };
 
@@ -244,6 +244,10 @@ public:
 					strcpy(host_control_pack_out_.act, "restart");
 				} else if (act == Screen::HostAct::OFF) {
 					strcpy(host_control_pack_out_.act, "off");
+				} else if (act == Screen::HostAct::MODEM_ON) {
+					strcpy(host_control_pack_out_.act, "modem_on");
+				} else if (act == Screen::HostAct::MODEM_OFF) {
+					strcpy(host_control_pack_out_.act, "modem_off");
 				}
 
 				sendPacket(MSG_HOST_CONTROL, &host_control_pack_out_, sizeof(host_control_pack_out_));

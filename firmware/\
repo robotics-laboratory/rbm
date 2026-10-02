@@ -52,7 +52,7 @@ public:
     		bool success = initialized;
     		success &= (myICM_.initializeDMP() == ICM_20948_Stat_Ok);
     		success &= (myICM_.enableDMPSensor(INV_ICM20948_SENSOR_ORIENTATION) == ICM_20948_Stat_Ok);
-    		success &= (myICM_.setDMPODRrate(DMP_ODR_Reg_Quat9, 16) == ICM_20948_Stat_Ok);
+    		success &= (myICM_.setDMPODRrate(DMP_ODR_Reg_Quat9, 0) == ICM_20948_Stat_Ok);
     		success &= (myICM_.enableFIFO() == ICM_20948_Stat_Ok);
     		success &= (myICM_.enableDMP() == ICM_20948_Stat_Ok);
     		success &= (myICM_.resetDMP() == ICM_20948_Stat_Ok);

@@ -63,6 +63,8 @@ void setup() {
     	ina.initIna();
     	screen.initScreen();
     	led.initLEDs();
+
+	Wire.setClock(400000);
     	
 
 	if (motors.isInit()) {
