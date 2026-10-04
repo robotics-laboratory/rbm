@@ -1,4 +1,4 @@
 release: v1.0.0
 firmware: v1
-container: v7
+docker: v7
 webui: v1
