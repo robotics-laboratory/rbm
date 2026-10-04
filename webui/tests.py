@@ -908,7 +908,7 @@ class SystemUpdate(BaseTest):
             return yaml.safe_load(response.text)
 
     async def show_changelog(self, release: str):
-        url = f"{self.UPDATE_URL}/release/latest/changelog.md"
+        url = f"{self.UPDATE_URL}/release/{release}/changelog.md"
         async with httpx.AsyncClient() as client:
             response = await client.get(url, follow_redirects=True)
             response.raise_for_status()
