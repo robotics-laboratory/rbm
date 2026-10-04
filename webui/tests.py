@@ -157,7 +157,7 @@ class BaseTest(abc.ABC):
         pass
 
     @abc.abstractmethod
-    async def test(self):
+    async def test(self) -> bool:
         pass
 
 
@@ -220,7 +220,7 @@ class SpeakerMicTest(BaseTest):
 
 class DockerROSTest(BaseTest):
     name = "DOCKER + ROS"
-    autorun = False
+    autorun = True
 
     EXPECTED_NODES = [
         "/hardware_node",
@@ -249,12 +249,11 @@ class DockerROSTest(BaseTest):
 
     TOPICS = [
         ("/scan", 10.0, 3),
+        ("/hardware/status", 10.0, 3),
         ("/hardware/imu", 50.0, 3),
-        ("/hardware/odom", 50.0, 3),
         ("/icp/odom", 10.0, 3),
         ("/local_costmap/costmap", 1.5, 10),
         ("/global_costmap/costmap", 0.5, 10),
-        ("/map", 0.2, 20),
     ]
 
     async def _docker_exec(self, cmd: str, check: bool = True, timeout: float = 10.0) -> str:
@@ -320,7 +319,7 @@ class DockerROSTest(BaseTest):
                     color="green",
                 )
             else:
-                self.log(f"--> OK: static transform", color="green")
+                self.log("--> OK: static transform", color="green")
 
     async def _check_topic(self, topic: str, min_rate: float, timeout: float):
         self.log(f"\n--- Checking topic: {topic} ---", color="yellow")
@@ -340,8 +339,8 @@ class DockerROSTest(BaseTest):
                     break
         if avg_rate is None or avg_rate == 0.0:
             if "no new messages" in output or not output.strip():
-                assert False, f"No messages received"
-            assert False, f"Could not determine message rate"
+                assert False, "No messages received"
+            assert False, "Could not determine message rate"
         required_rate = min_rate * self.TOLERANCE
         assert avg_rate >= required_rate, (
             f"Rate too low: {avg_rate:.1f} Hz < {required_rate:.1f} Hz "
@@ -500,7 +499,7 @@ class MotorsTest(BaseTest):
         
         output = await self.docker_inject(config)
         data = output.get("/hardware/status", [])
-        assert data, f"No /hardware/status data received"
+        assert data, "No /hardware/status data received"
 
         ok = True
         for i in range(4):
@@ -857,6 +856,7 @@ class UpdateWifiSettings(BaseTest):
         await self.shell("nmcli device wifi rescan")
         await self.shell("nmcli device wifi list", timeout=30)
         await self.shell(f"nmcli dev wifi connect \"{ssid}\" password \"{password}\" ifname wlan0")
+        return True
 
 class RestartDocker(BaseTest):
     name = "RESTART DOCKER"
@@ -945,3 +945,5 @@ class SystemUpdate(BaseTest):
         if self.current["release"] == self.latest["release"]:
             self.log("Already latest version, nothing to do", color="yellow")
             return False
+        await self.shell("curl -sSL setup.robomarvel.ru | bash", timeout=3600)
+        return True

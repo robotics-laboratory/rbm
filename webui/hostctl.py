@@ -74,6 +74,7 @@ class HostControl:
             cmd = "iw dev wlan0 interface add wlan1 type __ap"
             proc = await asyncio.subprocess.create_subprocess_shell(cmd)
             _, stderr = await proc.communicate()
+            await asyncio.sleep(0.5)
             if proc.returncode != 0:
                 self.log(stderr.decode().strip())
                 return False
@@ -146,7 +147,7 @@ class HostControl:
                         await self.hotspot(True)
                     elif payload == "modem_off":
                         await self.hotspot(False)
-                    elif payload == "reboot":
+                    elif payload == "restart":
                         await self.reboot()
         except WebSocketDisconnect:
             self.log("WS client disconnected")
