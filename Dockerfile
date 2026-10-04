@@ -1,5 +1,5 @@
 # https://hub.docker.com/layers/library/ros/jazzy-ros-base
-FROM ros@sha256:c5705f613a6427d07be6f3d0aba40068e16c3dea05604e1c95c63eac79fea658
+FROM ros:jazzy-ros-base@sha256:066420e07f60aa18262f2479981def87ebcfcec42eefb0c0c57c4a46098348ca
 
 ENV ROS_VERSION=2
 ENV ROS_DISTRO=jazzy
@@ -8,6 +8,9 @@ ENV RCUTILS_LOGGING_BUFFERED_STREAM=1
 ENV RCUTILS_COLORIZED_OUTPUT=1
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV PIP_NO_CACHE_DIR=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_ROOT_USER_ACTION=ignore
 ENV CMAKE_BUILD_TYPE=Release
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -15,7 +18,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN echo '\
 APT::Install-Recommends "0";\n\
 APT::Install-Suggests "0";\n\
-' > /etc/apt/apt.conf.d/01norecommend
+' > /etc/apt/apt.conf.d/01-no-recommends
 
 # Install cyclonedds RMW
 ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
@@ -34,7 +37,6 @@ RUN . $ROS_ROOT/setup.sh \
         uri: https://github.com/ros2-gbp/foxglove_bridge-release.git\n\
         version: release/$ROS_DISTRO/foxglove_bridge/0.8.5-1\n\
     " | vcs import src \
-    && rosdep update \
     && apt update \
     && rosdep install --from-paths src --ignore-src -y \
     && colcon build --merge-install --install-base /opt/ros/$ROS_DISTRO \
@@ -69,7 +71,6 @@ RUN . $ROS_ROOT/setup.sh \
         version: release/jazzy/slam_toolbox/2.8.3-1\n\
     " | vcs import src \
     && (cd src/slam_toolbox && git apply ../../slam-toolbox.patch) \
-    && rosdep update \
     && apt update \
     && rosdep install --from-paths src --ignore-src -y \
     && colcon build --merge-install --install-base /opt/ros/$ROS_DISTRO \
@@ -94,45 +95,31 @@ RUN . $ROS_ROOT/setup.sh \
     --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
     && rm -rf /tmp/*
 
-# Build libcamera for raspberry
-WORKDIR /tmp/libcamera-rpi-build
-RUN . $ROS_ROOT/setup.sh \
-    && git clone --depth 1 --branch "v0.6.0+rpt20251202" https://github.com/raspberrypi/libcamera \
-    && cd libcamera \
-    && apt update \
-    && apt install -y \
-    libboost-dev \
-    libgnutls28-dev \
-    openssl \
-    libtiff-dev \
-    pybind11-dev \
-    meson \
-    python3-yaml \
-    python3-ply \
-    python3-jinja2 \
-    && meson setup build --buildtype=release -Dgstreamer=disabled -Dpycamera=enabled \
-    && ninja -C build install \
-    && mv /usr/local/lib/python3/dist-packages/libcamera /usr/local/lib/python3.12/dist-packages \
-    && mv /usr/local/include/libcamera/libcamera /usr/include \
-    && mv /usr/local/lib/aarch64-linux-gnu/pkgconfig/* /usr/lib/pkgconfig \
-    && rmdir /usr/local/lib/aarch64-linux-gnu/pkgconfig \
-    && rm -rf /usr/local/include \
-    && rm -rf /tmp/* \
+# Install extra ROS dependencies
+RUN apt update && \
+    apt install -y \
+    ros-$ROS_DISTRO-xacro \
+    ros-$ROS_DISTRO-robot-state-publisher \
+    ros-$ROS_DISTRO-robot-localization \
     && rm -rf /var/lib/apt/lists/*
-    # && mv /usr/local/lib/aarch64-linux-gnu/* /usr/lib \
 
-# Build camera-ros
-WORKDIR /tmp/camera-ros-build
-RUN . $ROS_ROOT/setup.sh \
-    && mkdir src \
-    && git clone https://github.com/christianrauch/camera_ros.git src/camera_ros \
-    && rosdep update \
-    && apt update \
-    && rosdep install --from-paths src --ignore-src --skip-keys=libcamera -t build -t exec -y \
-    && colcon build --merge-install --install-base /opt/ros/$ROS_DISTRO --cmake-args -DCMAKE_CXX_FLAGS="-I/usr/include" \
-    && rm -rf /tmp/*
+# Install rtabmap-odom
+RUN apt update && \
+    apt install -y ros-$ROS_DISTRO-rtabmap-odom \
+    && export MARCH=$(gcc -dumpmachine) \
+    && rm -rf /usr/lib/$MARCH/libLLVM* \
+    && rm -rf /usr/lib/$MARCH/libgallium* \
+    && rm -rf /usr/lib/$MARCH/libQt* \
+    && rm -rf /usr/lib/$MARCH/libclang* \
+    && rm -rf /usr/lib/$MARCH/java \
+    && rm -rf /usr/lib/jvm \
+    && rm -rf /usr/lib/llvm* \
+    && rm -rf /usr/lib/qt5 \
+    && rm -rf /usr/share/doc \
+    && rm -rf /usr/share/icons \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install extras
+# Install extra tools
 RUN apt update && \
     apt install -y \
     tmux \
@@ -141,45 +128,12 @@ RUN apt update && \
     wget \
     python3-pip \
     python3-venv \
-    python3-serial \
-    ros-$ROS_DISTRO-xacro \
-    ros-$ROS_DISTRO-robot-state-publisher \
-    ros-$ROS_DISTRO-robot-localization \
-    ros-$ROS_DISTRO-rtabmap-odom \
     && rm -rf /var/lib/apt/lists/*
 
-# Setup venv, picamera2, yolo, yandex speechkit
-WORKDIR /tmp/venv-setup
-ADD docker/picamera2.patch /tmp/venv-setup/picamera2.patch
-RUN apt update \
-    && apt install -y linux-libc-dev libcap-dev portaudio19-dev python3-pyaudio \
-    && python3 -m venv /root/venv --system-site-packages \
+# Setup python venv
+RUN python3 -m venv /root/venv --system-site-packages \
     && . /root/venv/bin/activate \
-    && pip install picamera2 \
-    && patch -p2 -i /tmp/venv-setup/picamera2.patch -d /root/venv/lib/python3.12/site-packages/picamera2 \
-    && pip install --extra-index-url https://download.pytorch.org/whl/cpu torch torchvision "numpy<2.0.0" ncnn ultralytics-opencv-headless \
-    && mkdir /root/weights \
-    && python3 -c 'from ultralytics import YOLO; YOLO("/root/weights/yolo11n.pt").export(format="ncnn"); YOLO("/root/weights/yolo11n_ncnn_model", task="detect")' \
-    && pip install grpcio-tools \
-    && git clone https://github.com/yandex-cloud/cloudapi \
-    && cd cloudapi \
-    && mkdir output \
-    && python3 -m grpc_tools.protoc -I . -I third_party/googleapis \
-        --python_out=output \
-        --grpc_python_out=output \
-        google/api/http.proto \
-        google/api/annotations.proto \
-        yandex/cloud/api/operation.proto \
-        google/rpc/status.proto \
-        yandex/cloud/operation/operation.proto \
-        yandex/cloud/validation.proto \
-        yandex/cloud/ai/stt/v3/stt_service.proto \
-        yandex/cloud/ai/stt/v3/stt.proto \
-        yandex/cloud/ai/tts/v3/tts_service.proto \
-        yandex/cloud/ai/tts/v3/tts.proto \
-    && cp -r output/* /root/venv/lib/python3.12/site-packages/ \
-    && rm -rf /tmp/* \
-    && rm -rf /var/lib/apt/lists/*
+    && pip install pyserial cobs anycrc
 
 # Setup Jupyter Lab
 RUN . /root/venv/bin/activate \
@@ -210,9 +164,36 @@ RUN . /root/venv/bin/activate && pip install "setuptools<80.0.0"
 RUN wget -O /bin/mediamtx https://storage.yandexcloud.net/the-lab-storage/rbm/mediamtx-1.18.1-arm64-patched \
     && chmod +x /bin/mediamtx
 
+# Install gstreamer + pre-built custom plugin
+RUN apt update && \
+    apt install -y \
+    gstreamer1.0-tools \
+    gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-rtsp \
+    && wget -P /usr/lib/$(gcc -dumpmachine)/gstreamer-1.0 https://storage.yandexcloud.net/the-lab-storage/rbm/libgsthoboth264.so \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install openvscode
+ARG OPENVSCODE_DOWNLOAD_URL="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v1.109.5/openvscode-server-v1.109.5-linux-arm64.tar.gz"
+ARG OPENVSCODE_ROOT="/opt/openvscode-server"
+ENV PATH="${PATH}:${OPENVSCODE_ROOT}/bin"
+RUN mkdir ${OPENVSCODE_ROOT} && curl -sSL "${OPENVSCODE_DOWNLOAD_URL}" | tar -xz -C ${OPENVSCODE_ROOT} --strip-components=1
+RUN mkdir -p /root/.openvscode-server/data/Machine && echo '{\n\
+    "workbench.colorTheme": "Default Dark Modern",\n\
+    "files.dialog.defaultPath": "/src",\n\
+    "python.languageServer": "Jedi",\n\
+}' >> /root/.openvscode-server/data/Machine/settings.json
+RUN mkdir -p /tmp/extensions && cd /tmp/extensions \
+    && curl -sSL -O https://github.com/spkane/vscode-training-tweaks/releases/download/v0.0.3/training-tweaks-0.0.3.vsix \
+    && openvscode-server --install-extension /tmp/extensions/* \
+    && openvscode-server --install-extension ms-python.python \
+    && openvscode-server --install-extension ms-python.black-formatter
+
 # Setup .bashrc
 RUN echo '\
-export LD_LIBRARY_PATH=$ROS_ROOT/lib/$(gcc -dumpmachine):/usr/local/lib/$(gcc -dumpmachine)\n\
+export LD_LIBRARY_PATH=$ROS_ROOT/lib/$(gcc -dumpmachine):/usr/local/lib/$(gcc -dumpmachine):/usr/hobot/lib\n\
 source $ROS_ROOT/setup.bash\n\
 LOCAL_SETUP="/src/install/setup.bash";\n\
 if [ -f "$LOCAL_SETUP" ]; then source $LOCAL_SETUP; fi\n\
