@@ -1,27 +1,14 @@
-#!/usr/bin/env python3
-
 import asyncio
 import time
 import abc
 import json
 from pathlib import Path
 from typing import Callable, ClassVar
-from fastapi import WebSocket, WebSocketDisconnect
-from nicegui import app, ui
-from starlette.requests import Request
-import subprocess as sp
-from dataclasses import dataclass
+from nicegui import ui, app
 import traceback
-from serial import Serial
-import traceback
-import tempfile
-import logging
 import asyncio
-import psutil
-import socket
-import struct
-import httpx
 import math
+import httpx
 import yaml
 import sys
 import re
@@ -31,7 +18,7 @@ class BaseTest(abc.ABC):
     name: ClassVar[str] = ...
     autorun: ClassVar[bool] = True
     autoclear: ClassVar[bool] = True
-    tests: ClassVar[dict] = {}
+    subclasses: ClassVar[dict] = {}
 
     def __init__(self):
         self.status = "NOT RUN"
@@ -41,9 +28,10 @@ class BaseTest(abc.ABC):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        BaseTest.tests[cls] = True
+        BaseTest.subclasses[cls.__name__] = cls
 
     def log(self, msg: str, color: str = "default"):
+        if self.log_func is None: return
         COLORS = {
             "red": "\x1b[91m",
             "green": "\x1b[92m",
@@ -101,7 +89,7 @@ class BaseTest(abc.ABC):
             "sub_topics": config.get("sub_topics", []),
         }
         
-        cmd = 'export PS1="dummy" && source /root/.bashrc && python3 /src/scripts/inject.py'
+        cmd = 'export PS1="dummy" && source /root/.bashrc && /root/venv/bin/python /src/scripts/inject.py'
         cmd = f"docker exec -i ros bash -c 'export PS1=\"dummy\" && source ~/.bashrc && {cmd}'"
         self.log(f">>> [INJECT] $ {cmd}")
         proc = await asyncio.create_subprocess_shell(
@@ -211,11 +199,15 @@ class SpeakerMicTest(BaseTest):
 
         output_file = Path(f"/tmp/mic-test-{time.time_ns()}.wav")
         record_proc = self.shell(
-            "arecord -c2 -r 48000 -f S32_LE -t wav "
+            "arecord -c2 -r 48000 -f S16_LE -t wav "
             f"-V stereo -d 2 -v {output_file}"
         )
-        speaker_proc = self.shell("speaker-test -t wav -c2 -s2")
-        await asyncio.gather(record_proc, speaker_proc)
+        speaker_proc = self.shell("speaker-test -t wav -c2 -l1")
+        try:
+            await asyncio.gather(record_proc, speaker_proc)
+        except Exception:
+            record_proc.kill()
+            speaker_proc.kill()
         assert output_file.exists(), f"Output file missing: {output_file}"
         assert output_file.stat().st_size != 0, f"Output file empty: {output_file}"
         self.log("NOTICE: Check recorded audio manually", color="yellow")
@@ -636,9 +628,9 @@ class MoveTest(BaseTest):
             }
             phases = [
                 ("Forward 1", 0.8, 1.8, forward_signs),
-                ("Left", 3.0, 4.3, dict.fromkeys(self.SPEED_INDICES, -1)),
+                ("Left", 3.0, 4.3, {**forward_signs, **{"front_left": -1, "rear_left": -1}}),
                 ("Forward 2", 5.8, 6.8, forward_signs),
-                ("Right", 8.0, 9.3, dict.fromkeys(self.SPEED_INDICES, 1)),
+                ("Right", 8.0, 9.3, {**forward_signs, **{"front_right": -1, "rear_right": -1}}),
             ]
             for phase, start, end, expected_signs in phases:
                 phase_samples = [
@@ -662,7 +654,7 @@ class MoveTest(BaseTest):
                     if average_speeds[name] * sign < self.MIN_FEEDBACK_SPEED
                 ]
                 assert not bad_wheels, (
-                    f"{phase} feedback mismatch: {', '.join(bad_wheels)}"
+                    f"Phase '{phase}' feedback mismatch: {', '.join(bad_wheels)}"
                 )
             self.log("[OK] Wheel encoder feedback matches commands", color="green")
         finally:
@@ -670,45 +662,50 @@ class MoveTest(BaseTest):
             await self.stop()
         return True
 
-# ----------------------------------------------------------------
 
 class WriteFirmware(BaseTest):
     name = "FLASH FIRMWARE"
     autorun = False
     autoclear = False
 
-    DEFAULT_FIRMWARE_URL = "http://100.64.0.1:5000/rbm-v4-firmware-v1.bin"
-    DOCKER_FIRMWARE_PATH = Path("/home/robomarvel/robomarvel/build/firmware.bin")
-    DOCKER_PIO_PYTHON_PATH = Path("/root/.platformio/penv/bin/python")
+    UPDATE_URL = "https://setup.robomarvel.ru"
+    VERSION_PATH = Path("/opt/rbm/version.yaml")
+    FIRMWARE_PATH = Path("/opt/rbm/firmware.bin")
+    PORT = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
 
     async def mounted(self):
         self.output.set_visibility(True)
         with self.output:
-            self.url_input = ui.input(label="URL", value=self.DEFAULT_FIRMWARE_URL).classes("w-full").props("dense outlined")
+            self.url_input = ui.input(label="URL").classes("w-full").props("dense outlined")
+        if self.VERSION_PATH.exists():
+            data = yaml.safe_load(open(self.VERSION_PATH))
+            release = data["release"]
+            self.url_input.value = f"{self.UPDATE_URL}/release/{release}/firmware.bin"
 
     async def test(self):
         url = self.url_input.value
-        path = self.DOCKER_FIRMWARE_PATH
-        path.parent.mkdir(exist_ok=True)
+        path = self.FIRMWARE_PATH
         self.log(f"Firmware URL: {url}")
         self.log(f"Firmware path: {path}")
+
         self.log("Downloading...")
         async with httpx.AsyncClient() as client:
-            response = await client.get(url)
+            response = await client.get(url, follow_redirects=True)
             response.raise_for_status()
             path.write_bytes(response.content)
 
         try:
-            # FIXME: Режим заливки прошивки
-            self.log("Force-stopping hwnode...")
-            await self.docker_shell("pkill -e hwnode")
+            self.log("Stopping docker container...")
+            await self.shell("docker stop ros")
             self.log("Uploading...")
-            path = self.DOCKER_FIRMWARE_PATH.relative_to("/home/robomarvel/robomarvel")
-            cmd = f"{self.DOCKER_PIO_PYTHON_PATH} -m esptool --chip esp32 --baud 921600 write-flash -z 0x0 {path}"
-            await self.docker_shell(cmd, timeout=20)
+            cmd = (
+                f"{sys.executable} -m esptool --chip esp32 "
+                f"--port {self.PORT} --baud 921600 write-flash -z 0x10000 {path}"
+            )
+            await self.docker_shell(cmd, timeout=30)
         finally:
             self.log("Restarting docker...")
-            await self.shell("docker restart ros")
+            await self.shell("docker restart ros", timeout=20)
         
         return True
 
@@ -749,7 +746,7 @@ class UpdateConfig(BaseTest):
         await self.update()
 
     async def update(self):
-        config = HOSTCTL.esp_config
+        config = app.state.hostctl.esp_config
         if config is None:
             self.no_config_status.set_visibility(True)
             self.robot_id.value = ""
@@ -800,223 +797,151 @@ class UpdateConfig(BaseTest):
         }
         self.log(f"Config: {new_config}")
         self.log("Sending new config via hostctl...")
-        assert len(HOSTCTL.clients) >= 1, "hwnode websocket not connected"
-        await HOSTCTL.broadcast({"type": "set-config", "data": new_config})
+        assert len(app.state.hostctl.clients) >= 1, "hwnode websocket not connected"
+        await app.state.hostctl.broadcast({"type": "set-config", "data": new_config})
         await asyncio.sleep(0.5)
 
         self.log("Verifying new config...")
         await self.update()
-        config = HOSTCTL.esp_config
+        config = app.state.hostctl.esp_config
         assert config["robot_id"] == new_config["robot_id"]
         assert config["encoder_cpr"] == new_config["encoder_cpr"]
         assert config["motors"] == new_config["motors"]
         
         return True
 
-# ----------------------------------------------------------------
+class UpdateWifiSettings(BaseTest):
+    name = "WIFI SETTINGS"
+    autorun = False
+    autoclear = False
 
-class HostControl:
-    NETWORKS = {"wlan0": "wifi", "eth0": "eth", "tailscale0": "vpn"}
+    async def get_current_wifi(self):
+        proc = await asyncio.subprocess.create_subprocess_shell(
+            "nmcli -g NAME,TYPE,DEVICE connection show --active",
+            stdout=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        connection = None
+        for line in stdout.decode().splitlines(keepends=False):
+            name, type, device = line.split(":")
+            if type != "802-11-wireless": continue
+            if device != "wlan0": continue
+            connection = name
+            break
+        if connection is None:
+            return "robomarvel", "robomarvel"
+        proc = await asyncio.subprocess.create_subprocess_shell(
+            f"nmcli -s -g 802-11-wireless-security.psk connection show \"{connection}\"",
+            stdout=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        password = stdout.decode()
+        return connection, password
+
+    async def mounted(self):
+        self.output.set_visibility(True)
+
+        ssid, password = "robomarvel", "robomarvel"
+        try: ssid, password = await self.get_current_wifi()
+        except Exception: pass
+
+        with self.output:
+            self.ssid = ui.input(label="SSID", value=ssid).classes("w-full").props("dense outlined")
+            self.password = ui.input(label="Password", value=password).classes("w-full").props("dense outlined")
+
+    async def test(self):
+        ssid = self.ssid.value
+        password = self.password.value
+        assert ssid, "Wifi ssid not set"
+        assert password, "Wifi password not set"
+        await self.shell("nmcli device wifi rescan")
+        await self.shell("nmcli device wifi list", timeout=30)
+        await self.shell(f"nmcli dev wifi connect \"{ssid}\" password \"{password}\" ifname wlan0")
+
+class RestartDocker(BaseTest):
+    name = "RESTART DOCKER"
+    autorun = False
+    autoclear = False
+
+    async def get_docker_status(self):
+        proc = await asyncio.subprocess.create_subprocess_shell(
+            "docker inspect --format '{{.State.Running}}' ros",
+            stdout=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return None
+        return stdout.decode().strip() == "true"
+
+    async def mounted(self):
+        self.output.set_visibility(True)
+        self.output.clear()
+        status = await self.get_docker_status()
+        status = {True: "RUNNING", False: "STOPPED", None: "UNKNOWN"}[status]
+        with self.output:
+            with ui.row().classes("w-full items-center justify-after"):
+                ui.label(f"CURRENT STATUS: {status}")
+                ui.button("REFRESH", on_click=self.mounted).props("flat").classes("text-blue-500 p-0 min-h-0")
+
+    async def test(self):
+        await self.shell("docker restart ros", timeout=20)
+        await self.mounted()
+        return True
+
+class SystemUpdate(BaseTest):
+    name = "FULL SYSTEM UPDATE"
+    autorun = False
+    autoclear = False
     
-    def __init__(self):
-        self.clients: list[WebSocket] = []
-        self.esp_config = None
+    UPDATE_URL = "https://setup.robomarvel.ru"
+    VERSION_PATH = Path("/opt/rbm/version.yaml")
+    
+    def get_current_release(self):
+        if not self.VERSION_PATH.exists(): return {}
+        return yaml.safe_load(open(self.VERSION_PATH))
 
-    def log(self, msg: str):
-        print(f"[hostctl] {msg}")
+    async def get_latest_release(self):
+        url = f"{self.UPDATE_URL}/release/latest/version.yaml"
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, follow_redirects=True)
+            response.raise_for_status()
+            return yaml.safe_load(response.text)
 
-    def get_stats(self):
-        cpu = psutil.cpu_percent(interval=1.0)
-        mem = psutil.virtual_memory().percent
-        bpu = 0.0  # TODO
-        # TODO: Можно частично переписать на парсинг hrut_somstatus
-        temp = int(open('/sys/class/hwmon/hwmon0/temp3_input').read()) / 1000
-        return {"cpu": cpu, "mem": mem, "bpu": bpu, "temp": temp}
+    async def show_changelog(self, release: str):
+        url = f"{self.UPDATE_URL}/release/latest/changelog.md"
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, follow_redirects=True)
+            response.raise_for_status()
+            changelog = response.text
+        self.popup.clear()
+        with self.popup, ui.card():
+            ui.markdown(changelog)
+            ui.button("CLOSE", on_click=self.popup.close)
+        self.popup.open()
 
-    def get_networks(self):
-        addrs = {}
-        for name, if_addrs in psutil.net_if_addrs().items():
-            name = self.NETWORKS.get(name)
-            if name is None: continue
-            for addr in if_addrs:
-                if addr.family == socket.AF_INET:
-                    addrs[name] = addr.address
-                    break
-        keys = list(self.NETWORKS.values())
-        pairs = list(addrs.items())
-        pairs.sort(key=lambda x: keys.index(x[0]))
-        return dict(pairs[:3])
+    async def mounted(self):
+        self.output.set_visibility(True)
+        self.current = self.get_current_release()
+        self.latest = await self.get_latest_release()
+        with self.output.classes("gap-2"):
+            self.popup = ui.dialog()
+            with ui.row().classes("w-full items-center justify-after"):
+                ui.label(f"CURRENT RELEASE: {self.current['release']}")
+                async def callback1(): await self.show_changelog(self.current["release"])
+                ui.button("CHANGELOG", on_click=callback1).props("flat").classes("text-blue-500 p-0 min-h-0")
 
-    async def broadcast(self, data: dict):
-        for client in self.clients:
-            try:
-                await client.send_json(data)
-            except Exception as err:
-                self.log(f"broadcast err: {err}")
+            if self.current["release"] == self.latest["release"]:
+                ui.label("NO UPDATES AVAILABLE")
+                return
 
-    async def update_loop(self):
-        while True:
-            try:
-                stats = await asyncio.to_thread(self.get_stats)
-                networks = await asyncio.to_thread(self.get_networks)
-                data = {"type": "stats", "data": {"load": stats, "networks": networks}}
-                await self.broadcast(data)
-            except Exception as err:
-                self.log(f"update loop err: {err}")    
-
-    async def ws_handler(self, websocket: WebSocket):
-        await websocket.accept()
-        self.log("WS client connected")
-        self.clients.append(websocket)
-        await websocket.send_json({"type": "get-config"})
-        try:
-            while True:
-                data = await websocket.receive_json()
-                self.log(f"Incoming message: {data}")
-                # TODO: Handle all incoming commands
-                type, payload = data.get("type"), data.get("data")
-                if type == "config": self.esp_config = payload
-        except WebSocketDisconnect:
-            self.log("WS client disconnected")
-            self.clients.remove(websocket)
-
-HOSTCTL = HostControl()
-app.websocket('/hostctl')(HOSTCTL.ws_handler)
-
-@app.on_startup
-async def on_startup():
-    asyncio.create_task(HOSTCTL.update_loop())
-
-# ----------------------------------------------------------------
-
-class StatusLabel(ui.label):
-    COLORS = {
-        "running": "text-warning",
-        "pass": "text-positive",
-        "fail": "text-negative",
-        "not run": "text-grey",
-    }
-
-    def _handle_text_change(self, text: str) -> None:
-        super()._handle_text_change(text)
-        self.classes(remove=(" ".join(self.COLORS.values())))
-        res = self.COLORS.get(text.lower())
-        if res is not None: self.classes(add=res)
-
-
-INTRO = """
-  ___ ___ __  __   _____   _____ _____ ___ __  __   _____ ___ ___ _____ ___ 
- │ _ ╲ _ )  ╲╱  │ ╱ __╲ ╲ ╱ ╱ __│_   _│ __│  ╲╱  │ │_   _│ __╱ __│_   _╱ __│
- │   ╱ _ ╲ │╲╱│ │ ╲__ ╲╲ V ╱╲__ ╲ │ │ │ _││ │╲╱│ │   │ │ │ _│╲__ ╲ │ │ ╲__ ╲
- │_│_╲___╱_│  │_│ │___╱ │_│ │___╱ │_│ │___│_│  │_│   │_│ │___│___╱ │_│ │___╱
-                                                                            
-"""
-
-HOSTNAME = socket.gethostname()
-TESTS = [
-    USBTest,
-    CameraTest,
-    SpeakerMicTest,
-    HWStatusTest,
-    MotorsTest,
-    MoveTest,
-    DockerROSTest,
-    "-----",
-    WriteFirmware,
-    UpdateConfig,
-]
-
-
-@ui.page("/tests", favicon="✅")
-async def main_page():
-    ui.dark_mode(value=True)
-    ui.query(".nicegui-content").classes("p-0")
-    ui.page_title(f"{HOSTNAME.upper()} | TESTS")
-    test_instances = []
-
-    with ui.splitter(value=25).classes("w-full h-screen") as splitter:
-        with splitter.before:
-            with ui.column().classes("w-full p-4 overflow-auto"):
-                with ui.row().classes("w-full items-center"):
-                    ui.label("RBM SYSTEM TESTS").classes("text-h5 col")
-
-                    async def run_all():
-                        run_all_btn.disable()
-                        for test in test_instances:
-                            if test.autorun:
-                                await test.run()
-                        run_all_btn.enable()
-                    run_all_btn = ui.button("RUN ALL", on_click=run_all, icon="play_arrow")
-
-                ui.separator()
-
-                for test_class in TESTS:
-                    if isinstance(test_class, str):
-                        ui.separator()
-                        continue
-                    
-                    test = test_class()
-                    test_instances.append(test)
-
-                    with ui.row().classes("items-center gap-4 p-2 border rounded w-full").style("border-color: rgba(255, 255, 255, 0.25)"):
-                        ui.label(test.name).classes("font-bold col")
-                        StatusLabel().bind_text_from(test, "status")
-                        btn = ui.button("RUN", on_click=test.run).props("outline")
-                        output = ui.row().classes("w-full")
-                        output.set_visibility(False)
-
-                        test.log_func = lambda line: terminal.write(line + "\r\n")
-                        test.output = output
-                        test.run_btn = btn
-                        await test.mounted()
-
-        with splitter.after:
-            with ui.column().classes("w-full h-full p-4"):
-                terminal = ui.xterm().classes("size-full")
-                ui.element("q-resize-observer").on("resize", terminal.fit)
-                intro = INTRO + "—" * (len(INTRO.splitlines()[-1]) + 1) + "\n"
-                intro = intro.replace("\n", "\r\n")
-                terminal.write(intro)
-
-
-# ----------------------------------------------------------------
-
-LINKS = [
-    ("Foxglove", "category", "https://foxglove-ssl.robotics-lab.ru/?ds=foxglove-websocket&ds.url=ws%3A%2F%2F{ip}%3A8765"),
-    ("Jupyter Lab", "code", "http://{ip}:8080"),
-    ("Terminal (host)", "terminal", "http://{ip}:8100"),
-    ("Terminal (docker)", "terminal", "http://{ip}:8200"),
-    ("System Tests", "checklist", "/tests"),
-    ("Camera Stream", "videocam", "http://{ip}:8889/cam"),
-]
-
-@ui.page("/", favicon="🚀")
-async def welcome_page(request: Request):
-    ui.dark_mode(value=True)
-    ui.query(".nicegui-content").classes("p-0")
-    ui.page_title(f"{HOSTNAME.upper()} | HOME")
-    ip = request.url.hostname
-
-    with ui.column().classes("items-center justify-center w-full h-screen gap-2"):
-        ui.label(f"{HOSTNAME.upper()}").classes("text-h2 font-mono")
-        ui.label(f"IP: {ip}").classes("text-h6 font-mono mb-5")
-
-        with ui.card().classes("w-100 p-6 shadow-lg"):
-            for label, icon, url in LINKS:
-                with ui.link(
-                    target=url.format(ip=ip),
-                    new_tab=True
-                ).classes("bg-red-900 text-white no-underline rounded w-full p-2"):
-                    with ui.row().classes("items-center justify-center"):
-                        ui.icon(icon, size="md")
-                        ui.label(label.upper())
-
-
-ui.run(
-    title="ROBOMARVEL",
-    show=False,
-    port=80,
-    favicon="✅",
-    reconnect_timeout=10,
-    reload=True,
-)
+            with ui.row().classes("w-full items-center justify-after"):
+                ui.label(f"UPDATE AVAILABLE: {self.latest['release']}").classes("text-warning")
+                async def callback2(): await self.show_changelog(self.latest["release"])
+                ui.button("CHANGELOG", on_click=callback2).props("flat").classes("text-blue-500 p-0 min-h-0")
+    
+    async def test(self):
+        self.log(f"Current release info: {self.current}")
+        self.log(f"Latest release info: {self.latest}")
+        if self.current["release"] == self.latest["release"]:
+            self.log("Already latest version, nothing to do", color="yellow")
+            return False

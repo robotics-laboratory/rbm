@@ -1,6 +1,6 @@
 services:
   ros:
-    image: registry.robotics-lab.ru/robomarvel:v6
+    image: registry.robotics-lab.ru/robomarvel:v7
     build: .
     platform: linux/arm64
     container_name: ros
@@ -11,6 +11,7 @@ services:
       core: 0
     ports:
       - 8765:8765      # Foxglove Websocket
+      - 8000:8000      # OpenVSCode
       - 8080:8080      # Jupyter Lab
       - 8889:8889      # MediaMTX HTTP
       - 8189:8189/udp  # MediaMTX WebRTC
