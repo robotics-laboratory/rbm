@@ -77,18 +77,15 @@ class HardwareNode(Node):
         self.pid_sub = self.create_subscription(Float32MultiArray, "/hardware/pid", self.pid_callback, 1)
         self.imu_pub = self.create_publisher(Imu, "/hardware/imu", 1)
         self.status_pub = self.create_publisher(Float32MultiArray, "/hardware/status", 1)
-        self.pc2_pub = self.create_publisher(PointCloud2, "tof/cloud", 10)
-        self.odom_pub = self.create_publisher(Odometry, "hardware/odom", 1)
+        self.pc2_pub = self.create_publisher(PointCloud2, "/tof/cloud", 10)
+        self.odom_pub = self.create_publisher(Odometry, "/hardware/odom", 1)
         
         self.wheel_test_sub = self.create_subscription(Float32MultiArray , "/hardware/wheel_targets", self.handle_wheel_targets, 10)
         self.wheel_test_active = False
 
-        self.errors_pub = self.create_publisher(String, "/hardware/errors", 10)
-
         self.tof_tan_lookup = compute_zone_angles()
         self.read_thread = Thread(target=self.read_loop, daemon=True)
         self.read_thread.start()
-
 
     def quiet_callback(self, msg: Bool):
         if msg.data:
@@ -97,11 +94,9 @@ class HardwareNode(Node):
             self.disable_quiet_mode()
 
     def enable_quiet_mode(self):
-        self.get_logger().warning("QUIET MODE: ONE")
-
+        self.get_logger().warning("QUIET MODE: ON")
         self.quiet_mode = True
         self.quiet_since = time.monotonic()
-        
         if self.ser.is_open:
             self.ser.close()
 
@@ -110,7 +105,6 @@ class HardwareNode(Node):
             return
         if not self.ser.is_open:
             self.ser.open()
-
         self.quiet_mode = False
         self.quiet_since = None
         self.get_logger().warning("QUIET MODE: OFF")
@@ -168,15 +162,11 @@ class HardwareNode(Node):
         
         return msg
 
-
     def handle_log(self, payload):
-        mess = bytes(payload.message)
-        mess = mess.split(b"\x00", 1)[0]
-        mess = mess.decode("utf-8", errors="replace")
-        
-        msg = String()
-        msg.data = mess
-        self.errors_pub.publish(msg)
+        msg = bytes(payload.message)
+        msg = msg.split(b"\x00", 1)[0]
+        msg = msg.decode("utf-8", errors="ignore")
+        self.get_logger().error(msg)
 
     def handle_status(self, payload):
         status = Float32MultiArray()
@@ -235,33 +225,13 @@ class HardwareNode(Node):
         self.imu_pub.publish(imu)
 
     def handle_tof(self, payload):
-        distances = np.array(
-            list(payload.distance_mm),
-            dtype=np.float32
-        )
-
-        statuses = np.array(
-            list(payload.status),
-            dtype=np.uint8
-        )
-
+        distances = np.array(list(payload.distance_mm), dtype=np.float32)
+        statuses = np.array(list(payload.status), dtype=np.uint8)
         tan_x, tan_y = self.tof_tan_lookup
-
-        points = distances_to_points(
-            distances,
-            tan_x,
-            tan_y
-        )
-
+        points = distances_to_points(distances, tan_x, tan_y)
         mask = (statuses == 5) & (distances >= 20)
-
-        #points = points[mask]
-
-        cloud = self.numpy_to_pointcloud2(
-            points,
-            frame_id="tof_lidar"
-        )
-
+        points = points[mask]
+        cloud = self.numpy_to_pointcloud2(points, frame_id="tof_lidar")
         self.pc2_pub.publish(cloud)
     
     def handle_host_control(self, payload):
@@ -274,8 +244,6 @@ class HardwareNode(Node):
             return
 
         packet = proto.ControlPacket()
-        
-
         packet.front_left = msg.data[0]
         packet.front_right = msg.data[1]
         packet.rear_left = msg.data[2]
@@ -287,13 +255,9 @@ class HardwareNode(Node):
         else:
             self.wheel_test_active = True
 
-###########################################################################
-
     def handle_config(self, payload: proto.ConfigV1):
         self.get_logger().info(f"HANDLE CONFIG: {payload}")
         self.host_bridge.send_config(payload)
-
-###########################################################################
         
     def read_loop(self):
         while rclpy.ok():

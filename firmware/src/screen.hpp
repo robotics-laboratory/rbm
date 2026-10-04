@@ -294,6 +294,7 @@ do {
 					} else {
 						host_act_ = HostAct::MODEM_OFF;
 					}
+					screen_dirty_ = true;
 				} 
 				button_one_long_check_ = false;
 			}
@@ -345,6 +346,16 @@ do {
 			screen_dirty_ = true;
 		}
 	}
+
+	void setHotspotMode(bool enabled) {
+    		if (modem_enabled_ != enabled) {
+       			modem_enabled_ = enabled;
+
+        		if (page_ == Page::MODEM) {
+            			screen_dirty_ = true;
+        		}
+    		}
+	}	
 
 	bool isInit() const {
 		return SCREEN_INIT_OK_;
@@ -535,12 +546,18 @@ private:
 	}
 
 	void drawModem() {
-		u8g2_.setCursor(0, 12);
-		u8g2_.print("Network: RDK-X5");
-		u8g2_.setCursor(0, 28);
-		u8g2_.print("Password: robomarvel");
-		u8g2_.setCursor(0, 42);
-		u8g2_.print("IP: 10.10.10.10");
+		bool hotspot_on = strcmp(host_info_.networks[0].name, "hotspot") == 0 || strcmp(host_info_.networks[1].name, "hotspot") == 0 || strcmp(host_info_.networks[2].name, "hotspot") == 0;
+		if (hotspot_on || modem_enabled_) {
+			u8g2_.setCursor(0, 12);
+			u8g2_.print("SSID: ");
+			u8g2_.print(config.robot_id);
+			u8g2_.setCursor(0, 26);
+			u8g2_.print("Password: robomarvel");
+			u8g2_.setCursor(0, 40);
+			u8g2_.print("IP: 10.10.10.10");
+		} else {
+			drawCentered("Hotspot OFF", 28);
+		}
 
 		if (modem_selected_ == 0) {
 			u8g2_.drawBox(10, 47, 45, 16);

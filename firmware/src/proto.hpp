@@ -158,6 +158,7 @@ public:
 			}
 			screen_.setHostLoad(host_pack_in_.hostload.mem, host_pack_in_.hostload.cpu, host_pack_in_.hostload.npu, host_pack_in_.hostload.temp);
 
+			screen_.setHotspotMode(host_pack_in_.hotspot_mode);
 			host_status_once_ = true;
 		});
 

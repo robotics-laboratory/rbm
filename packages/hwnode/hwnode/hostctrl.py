@@ -48,6 +48,7 @@ class HostBridge:
             net = proto.HostNetwork(name=name.encode(), ip=ip.encode())
             status.networks[i] = net
         status.load = proto.HostLoad(**data["load"])
+        status.hotspot_mode = "hotspot" in data["networks"]
         self.stats_cb(status)
 
     def on_get_config(self, _):

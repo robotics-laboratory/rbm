@@ -10,17 +10,14 @@ def skip_from_build(node):
 
     return node
 
-
 def set_quiet_mode(value):
     data = "{data: true}" if value else "{data: false}"
-
     command = (
         "source /opt/ros/jazzy/setup.bash && "
-        "ros2 topic pub --once /hardware/quiet_mode std_msgs/msg/Bool "
-        f"'{data}'"
+        "ros2 topic pub --once --max-wait-time-secs 3 "
+        f"/hardware/quiet_mode std_msgs/msg/Bool '{data}'"
     )
-
-    subprocess.run(["bash", "-c", command], check=True)
+    subprocess.run(["bash", "-c", command], check=False)
 
 def before_upload(source, target, env):
     set_quiet_mode(True)

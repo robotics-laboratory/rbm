@@ -109,7 +109,7 @@ class ControlPacket(ctypes.Structure):
 class HostNetwork(ctypes.Structure):
     _pack_ = 1
     _fields_ = [
-        ("name", ctypes.c_char * 4),
+        ("name", ctypes.c_char * 8),
         ("ip", ctypes.c_char * 15),
     ]
 
