@@ -702,7 +702,7 @@ class WriteFirmware(BaseTest):
                 f"{sys.executable} -m esptool --chip esp32 "
                 f"--port {self.PORT} --baud 921600 write-flash -z 0x10000 {path}"
             )
-            await self.docker_shell(cmd, timeout=30)
+            await self.shell(cmd, timeout=30)
         finally:
             self.log("Restarting docker...")
             await self.shell("docker restart ros", timeout=20)
