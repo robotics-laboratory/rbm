@@ -25,13 +25,41 @@ int logV(const char* format, va_list args) {
 	return len;
 }
 
+void resetI2C(int sda_pin, int scl_pin) {
+    pinMode(scl_pin, OUTPUT_OPEN_DRAIN);
+    pinMode(sda_pin, OUTPUT_OPEN_DRAIN);
+    digitalWrite(scl_pin, HIGH);
+    digitalWrite(sda_pin, HIGH);
+    delayMicroseconds(5);
+
+    for (int i = 0; i < 9; i++) {
+        digitalWrite(scl_pin, LOW);
+        delayMicroseconds(5);
+        digitalWrite(scl_pin, HIGH);
+        delayMicroseconds(5);
+    }
+
+    digitalWrite(sda_pin, LOW);
+    delayMicroseconds(5);
+    digitalWrite(scl_pin, HIGH);
+    delayMicroseconds(5);
+    digitalWrite(sda_pin, HIGH);
+    delayMicroseconds(5);
+	
+    pinMode(scl_pin, INPUT);
+    pinMode(sda_pin, INPUT);
+    delayMicroseconds(50);
+}
+
 void setup() {
 	Serial.begin(921600);
 	while (!Serial) delay(10);
 
-	Wire.begin();
+	resetI2C(21, 22);
+	Wire.begin(21, 22);
 	Wire.setClock(400000);
 
+	resetI2C(33, 32);
 	static TwoWire TOF_I2C(1);
 	TOF_I2C.begin(33, 32, 1000000);
 
@@ -46,26 +74,23 @@ void setup() {
 	loadConfig();
 
 	static Motors motors;
-
 	static Imu imu(Wire, wireMutex, 0x69);
 	static Tof tof(TOF_I2C, 0x29);
 	static Ina ina(Wire, wireMutex, 0x41);
 	static Screen screen(Wire, wireMutex, 0x3C, 25, 26, imu, tof, ina);
 	static Led led;
 	static Proto proto(Serial, motors, imu, tof, ina, screen);
+
 	proto.initProto();
 	log_proto = &proto;
 	esp_log_set_vprintf(logV);
 
-    	motors.initMotors();
-    	imu.initImu();
-    	tof.initToF();
-    	ina.initIna();
-    	screen.initScreen();
-    	led.initLEDs();
-
-	Wire.setClock(400000);
-    	
+	motors.initMotors();
+	screen.initScreen();
+	ina.initIna();
+	imu.initImu();
+	tof.initToF();
+	led.initLEDs();
 
 	if (motors.isInit()) {
 		xTaskCreatePinnedToCore(Motors::task, "motors", 2048, &motors, 1, NULL, 1);
@@ -83,7 +108,7 @@ void setup() {
 	}
 
 	if (screen.isInit()) {
-		xTaskCreatePinnedToCore(Screen::screenTask, "screen", 2048, &screen, 1, NULL, 1);
+		xTaskCreatePinnedToCore(Screen::screenTask, "screen", 4096, &screen, 1, NULL, 1);
 		xTaskCreatePinnedToCore(Screen::buttonTask, "button", 2048, &screen, 1, NULL, 1);
 	}
 

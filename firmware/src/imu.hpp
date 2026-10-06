@@ -62,9 +62,6 @@ public:
 }
 
 	Imu(TwoWire& wire, SemaphoreHandle_t& wireMutex, uint8_t address) : wire_(wire), wireMutex_(wireMutex), address_(address) {
-		if (i2cCheck(wire_, address_)) {
-			initImu();
-		}
 	}
 
 
