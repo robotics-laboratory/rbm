@@ -154,6 +154,10 @@ class MotorDir(ctypes.Structure):
         ("encoder_dir", ctypes.c_bool),
     ]
 
+    def __repr__(self):
+        fields = {name: getattr(self, name) for name, _ in self._fields_}
+        return f"{self.__class__.__name__}({fields})"
+
 class MotorDirConfig(ctypes.Structure):
     _pack_ = 1
     _fields_ = [
@@ -162,6 +166,10 @@ class MotorDirConfig(ctypes.Structure):
         ("rear_left", MotorDir),
         ("rear_right", MotorDir),
     ]
+
+    def __repr__(self):
+        fields = {name: getattr(self, name) for name, _ in self._fields_}
+        return f"{self.__class__.__name__}({fields})"
 
 class ConfigV1(ctypes.Structure):
     _pack_ = 1
@@ -173,6 +181,10 @@ class ConfigV1(ctypes.Structure):
         ("pid", PidState),
         ("motors", MotorDirConfig),
     ]
+
+    def __repr__(self):
+        fields = {name: getattr(self, name) for name, _ in self._fields_}
+        return f"{self.__class__.__name__}({fields})"
 
 class SetConfig(ctypes.Structure):
     _pack_ = 1
@@ -252,45 +264,3 @@ def write_null_packet(ser : Serial, msg_type: PacketType, payload : bytes = b"")
     frame = cobs.encode(msg_type.to_bytes(1, "little") + payload + crc) + b"\x00"
     ser.write(frame)
     ser.flush()
-
-
-if __name__ == "__main__":
-    from threading import Thread, main_thread
-    import time
-    
-    PORT = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
-    SPEED = 921600
-    ser = Serial(port=PORT, baudrate=SPEED)
-    print("START") 
-    while True:
-        ret = read_packet(ser)
-
-        if ret is None:
-            continue
-
-        packet_type, packet = ret
-
-        if packet_type == PacketType.HOST_CONTROL:
-            print(f"RECV <<< {packet_type.name}: {packet}")
-
-    def send_speeds(a, b, c, d):
-        pack = ControlPacket(float(a), float(-b), float(c), float(-d))
-        print(f"SENDING >>> {pack}")
-        #write_packet(ser, pack)
-
-    def read_loop():
-        while main_thread().is_alive():
-            ret = read_packet(ser)
-            if ret is not None:
-                type, pack = ret
-                print (f"RECV <<< {type.name}: {pack}")
-    read_thread = Thread(target=read_loop, daemon=True)
-    read_thread.start()
-
-    for i in range(4):
-        arr = [0] * 4
-        arr[i] = 10
-        send_speeds(*arr)
-        time.sleep(1.0)
-
-    send_speeds(0, 0, 0, 0)
