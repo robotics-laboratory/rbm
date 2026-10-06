@@ -86,10 +86,15 @@ void setup() {
 	esp_log_set_vprintf(logV);
 
 	motors.initMotors();
+	delay(10);
 	screen.initScreen();
+	delay(10);
 	ina.initIna();
+	delay(10);
 	imu.initImu();
+	delay(10);
 	tof.initToF();
+	delay(10);
 	led.initLEDs();
 
 	if (motors.isInit()) {
