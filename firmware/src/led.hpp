@@ -4,7 +4,7 @@
 #include <FastLED.h>
 
 constexpr int WS_LED_PIN = 16;
-constexpr int NUM_LEDS = 80;
+constexpr int NUM_LEDS = 84;
 constexpr int MAX_BRIGHTNESS = 128;
 
 

@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <SparkFun_VL53L5CX_Library.h>
+#include "i2c_check.hpp"
 
 
 class Tof {
@@ -35,12 +36,24 @@ public:
 	void updateToF() {
     
    		while (true) {
+        if (!monitor_.isLive()) {
+          TOF_INIT_OK_ = false;
+
+          vTaskDelay(pdMS_TO_TICKS(1000));
+          continue;
+        }
+        
         		if (lidar_.isDataReady() && lidar_.getRangingData(&lidar_data_)) {
-            			for (int i = 0; i < 64; i++) {
+            	bool check = lidar_.getRangingData(&lidar_data_);
+              monitor_.record(check);
+
+              if (check && monitor_.isLive()) {
+              for (int i = 0; i < 64; i++) {
             				state_.distance_mm[i] = lidar_data_.distance_mm[i];
         				state_.reflectance[i] = lidar_data_.reflectance[i];
         				state_.status[i] = lidar_data_.target_status[i];
         			}
+              }
         		}
         
         		vTaskDelay(pdMS_TO_TICKS(10));
@@ -76,4 +89,8 @@ private:
     	bool TOF_INIT_OK_ = false;
 
     	State state_;
+
+      I2CMonitor<20, 3> monitor_;
+
+
 };
