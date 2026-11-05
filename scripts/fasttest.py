@@ -1,8 +1,7 @@
 from serial import Serial
 from threading import Thread
 from argparse import ArgumentParser
-#import proto
-from hwnode import proto
+import proto
 import time
 
 PORT = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
@@ -62,10 +61,6 @@ def run_test(node: FakeNode):
         node.send_speeds(0, 0, SPEED, 0)
         time.sleep(1)
         node.send_speeds(0, 0, 0, SPEED)
-        time.sleep(1)
-        node.send_speeds(0, 0, 0, 0)
-        time.sleep(1)
-        node.send_speeds(SPEED, SPEED, SPEED, SPEED)
         time.sleep(1)
     finally:
         node.send_speeds(0, 0, 0, 0)
