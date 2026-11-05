@@ -17,16 +17,11 @@ ESP32HWEncoder::ESP32HWEncoder(int pinA, int pinB, int32_t ppr, int pinI)
 
 void ESP32HWEncoder::init()
 {
-    //pcnt_unit_config_t unit_config = {
-    //    .low_limit = INT16_MIN,
-    //    .high_limit = INT16_MAX,
-    //    .flags.accum_count = true,
-    //};
-    pcnt_unit_config_t unit_config = {};
-    unit_config.low_limit = INT16_MIN;
-    unit_config.high_limit = INT16_MAX;
-    unit_config.flags.accum_count = true;
-    
+    pcnt_unit_config_t unit_config = {
+        .low_limit = INT16_MIN,
+        .high_limit = INT16_MAX,
+        //.flags.accum_count = true,
+    };
     ESP_ERROR_CHECK(pcnt_new_unit(&unit_config, &pcnt_unit));
 
     // 2. Set up a glitch filter (suppress noise shorter than 1 microsecond)
@@ -60,9 +55,6 @@ void ESP32HWEncoder::init()
     ESP_ERROR_CHECK(pcnt_channel_set_level_action(pcnt_chan_b, PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_INVERSE));
 
     // 7. Enable and start the PCNT unit
-    ESP_ERROR_CHECK(pcnt_unit_add_watch_point(pcnt_unit, INT16_MAX));
-    ESP_ERROR_CHECK(pcnt_unit_add_watch_point(pcnt_unit, INT16_MIN));
-
     ESP_ERROR_CHECK(pcnt_unit_enable(pcnt_unit));
     ESP_ERROR_CHECK(pcnt_unit_clear_count(pcnt_unit));
     ESP_ERROR_CHECK(pcnt_unit_start(pcnt_unit));
@@ -112,14 +104,20 @@ float IRAM_ATTR ESP32HWEncoder::getSensorAngle()
 
     // Retrieve the count register into a variable
     //pcnt_get_counter_value(pcnt_config.unit, &angleCounter);
-    int count = 0;
-    ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &count));
-    int32_t angleCount = count % cpr;
-    if (angleCount < 0) {
-      angleCount += cpr;
+    pcnt_unit_get_count(pcnt_unit, &angleCounter);
+
+    // Trim the accumulator variable to prevent issues with it overflowing
+    // Make the % operand behave mathematically correct (-5 modulo 4 == 3; -5 % 4 == -1)
+    angleOverflow %= cpr;
+    if (angleOverflow < 0){
+        angleOverflow += cpr;
     }
+
     int32_t prevAngleSum = angleSum;
-    angleSum = angleCount;
+    angleSum = (angleOverflow + angleCounter) % cpr;
+    if (angleSum < 0) {
+        angleSum += cpr;
+    }
 
     //taskEXIT_CRITICAL(&spinlock); // Exit critical section
     

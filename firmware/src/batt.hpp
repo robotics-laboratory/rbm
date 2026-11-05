@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_INA219.h>
-#include "i2c_check.hpp"
+
 
 class Ina {
 public:
@@ -29,36 +29,20 @@ public:
 
 	void updateIna() {
 		while (true) {
-      if (!monitor_.isLive()) {
-        INA_INIT_OK_ = false;
-
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        continue;
-      }
 			if (xSemaphoreTake(wireMutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
 
-            			float voltage = ina219_.getBusVoltage_V();
-                  bool volt_check = ina219_.success();
-            			float current = ina219_.getCurrent_mA();
-                  bool curr_check = ina219_.success();
+            			state_.voltage = ina219_.getBusVoltage_V();
+            			state_.current = ina219_.getCurrent_mA();
 
             			xSemaphoreGive(wireMutex_);
 
-                  monitor_.record(volt_check);
-                  monitor_.record(curr_check);
-                  if (monitor_.isLive() && volt_check && curr_check) {
-            			  
-                    state_.voltage = voltage;
-                    state_.current = current;
-
-                    state_.percent =
+            			state_.percent =
                 		interpolSoc(
                     			state_.voltage,
                     			discharge_,
                     			chargeSoc_,
                     			BAT_TABLE_SIZE
                 		);
-                  }
         		}
 			vTaskDelay(pdMS_TO_TICKS(250));
 		}
@@ -140,6 +124,4 @@ private:
 	bool INA_INIT_OK_ = false;
 
 	State state_;
-
-  I2CMonitor<20, 3> monitor_;
 };
