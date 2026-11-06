@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <ICM_20948.h>
+#include "i2c_check.hpp"
 
 
 class Imu {
@@ -70,11 +71,29 @@ public:
 		uint32_t last_ts = 0;
     
    		while (true) {
+        if (!monitor_.isLive()) {
+          IMU_INIT_OK_ = false;
+
+          vTaskDelay(pdMS_TO_TICKS(1000));
+          continue;
+        }
+
+
         		icm_20948_DMP_data_t data;
 			if (xSemaphoreTake(wireMutex_, pdMS_TO_TICKS(20)) == pdTRUE) {
         			myICM_.readDMPdataFromFIFO(&data);
 
-				xSemaphoreGive(wireMutex_);
+              auto status = myICM_.status;
+              xSemaphoreGive(wireMutex_);
+
+
+              if (status == ICM_20948_Stat_Ok || status == ICM_20948_Stat_FIFOMoreDataAvail) {
+                monitor_.record(true);
+              } else if (status != ICM_20948_Stat_FIFONoDataAvail) {
+                monitor_.record(false);
+              }
+
+				
         			double q1, q2, q3, q0;
         
         			if ((myICM_.status == ICM_20948_Stat_Ok) || (myICM_.status == ICM_20948_Stat_FIFOMoreDataAvail)) {
@@ -92,11 +111,18 @@ public:
         			}	
 			}
 
+      if (!monitor_.isLive()) {
+        IMU_INIT_OK_ = false;
+        continue;
+      }
+
         		uint32_t now = micros();
         		if ((now - last_ts >= 100000) || (now < last_ts)) {
             			if (xSemaphoreTake(wireMutex_, pdMS_TO_TICKS(20)) == pdTRUE) {
 	        			myICM_.getAGMT();
-	    
+
+                bool check = myICM_.status == ICM_20948_Stat_Ok;
+	              monitor_.record(check);
 
     	    			if (myICM_.status == ICM_20948_Stat_Ok) {
         				acc_.x = myICM_.accX();
@@ -149,12 +175,17 @@ private:
 	uint8_t address_;
 		IMUDEBUG debug_;
 
-	bool IMU_INIT_OK_;
+	bool IMU_INIT_OK_ = false;
 
 	bool i2cCheck(TwoWire& bus, uint8_t address) {
 		bus.beginTransmission(address);
 		return bus.endTransmission() == 0;
 	}
+
+  I2CMonitor<20, 3> monitor_;
+  uint32_t lastRetry_ = 0;
+
+  static constexpr uint32_t RETRY_INTERVAL_MS = 1000;
 
 	Coord acc_;
 	Coord gyr_;

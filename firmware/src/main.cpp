@@ -102,7 +102,7 @@ void setup() {
 	}
 
 	if (imu.isInit()) {
-		xTaskCreatePinnedToCore(Imu::task, "imu", 2048, &imu, 1, NULL, 1);
+		xTaskCreatePinnedToCore(Imu::task, "imu", 8192, &imu, 1, NULL, 1);
 	}
 
 	if (tof.isInit()) {

@@ -78,7 +78,12 @@ do {
 } while (u8g2_.nextPage());
 		//u8g2_.drawBox(0, 0, u8g2_.getDisplayWidth(), u8g2_.getDisplayHeight());
     		//u8g2_.sendBuffer();
-		
+
+    button_one_.setPressMs(500);
+    button_two_.setPressMs(500);
+
+
+
 		button_one_.attachClick(
 			buttonOneClickCallback
 		);
@@ -131,7 +136,7 @@ do {
 			if (host_connected_ && millis() - last_host_packet_ >= HOST_TIMEOUT_MS) {
 				host_connected_ = false;
 
-				if (page_ == Page::INFO) {
+				if (page_ == Page::INFO || page_ == Page::MODEM || page_ == Page::BOOT) {
 					screen_dirty_ = true;
 				}
 			}
@@ -318,17 +323,32 @@ do {
 	}
 
 	void setNetworkInfo(uint8_t idx, const char* name, const char* ip) {
-		if (idx >= 3) {
+		if (idx >= 3 || name == nullptr || ip == nullptr) {
 			return;
 		}
 
-		 memcpy(host_info_.networks[idx].name, name, 8);
-		 host_info_.networks[idx].name[8] = '\0';
+    auto& network = host_info_.networks[idx];
 
-		 memcpy(host_info_.networks[idx].ip, ip, 15);
-		 host_info_.networks[idx].ip[15] = '\0';
+    bool ip_changed = strcmp(network.ip, ip) != 0;
 
-		 if (page_ == Page::INFO) {
+    snprintf(network.name, sizeof(network.name), "%s", name);
+    snprintf(network.ip, sizeof(network.ip), "%s", ip);
+
+    last_host_packet_ = millis();
+    host_connected_ = true;
+
+    if (ip_changed && ip[0] != '\0' && strcmp(ip, "0.0.0.0") != 0) {
+      curr_network_ = idx;
+      last_network_ = millis();
+    }
+    
+    //memcpy(host_info_.networks[idx].name, name, 8);
+		// host_info_.networks[idx].name[8] = '\0';
+
+		// memcpy(host_info_.networks[idx].ip, ip, 15);
+		// host_info_.networks[idx].ip[15] = '\0';
+
+		 if (page_ == Page::INFO || page_ == Page::MODEM || page_ == Page::BOOT) {
 			screen_dirty_ = true;
 		}
 	}

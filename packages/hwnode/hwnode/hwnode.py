@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from serial import Serial
+from serial import Serial, SerialException
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Float32MultiArray, Header, String, Bool
 from sensor_msgs.msg import Imu, PointCloud2, PointField
@@ -15,8 +15,8 @@ import struct
 import time
 import numpy as np
 
-WHEEL_RADIUS = 0.045 / 2  # m
-WHEEL_BASE = 0.140  # m
+WHEEL_RADIUS = 0.0492 / 2  # m was 0.045
+WHEEL_BASE = 0.2485  # m 0.140
 MAX_LINEAR = 0.5  # !!! 0.5  # m/s
 MAX_ANGULAR = 2.5 # !!! 2.5  # rad/s
 MAX_ACCEL_LINEAR = 0.3  # m/s²
@@ -52,11 +52,21 @@ class HardwareNode(Node):
         self.v_left = 0.0
         self.v_right = 0.0
 
+        self.prev_wheel_angles = None
+        self.wheel_angle_deltas = [0.0, 0.0, 0.0, 0.0]
+        self.prev_wheel_angles = None
+        self.odom_x = 0.0
+        self.odom_y = 0.0
+        self.odom_yaw = 0.0
+        self.last_odom_time = None
+
+
         self.last_feedback: Feedback = None
         self.last_cmd_time = self.get_clock().now()
-        self.ser = Serial(port=PORT, baudrate=SPEED, timeout=0.5)
+        # self.ser = Serial(port=PORT, baudrate=SPEED, timeout=0.5)
         
         self.serial_lock = Lock()
+        self.ser = None
 
         self.quiet_mode = False
         self.quiet_since = None
@@ -64,7 +74,7 @@ class HardwareNode(Node):
         self.quiet_sub = self.create_subscription(Bool, "/hardware/quiet_mode", self.quiet_callback, 10)
         self.quiet_tim = self.create_timer(1.0, self.quiet_watchdog)
 
-        self.get_logger().info(f"Serial connected: {PORT} @ {SPEED}")
+        #self.get_logger().info(f"Serial connected: {PORT} @ {SPEED}")
         self.host_bridge = HostBridge(
             logger=self.get_logger(),
             on_stats=self.on_host_status,
@@ -119,23 +129,24 @@ class HardwareNode(Node):
     def on_host_status(self, status: proto.HostStatusPacket):
         if self.quiet_mode:
             return
-        proto.write_packet(self.ser, status)
+        self.send_serial(status)
 
     def on_get_config(self):
         if self.quiet_mode:
             return
 
         self.get_logger().info("hwnode : on_get_config")
-        proto.write_null_packet(self.ser, proto.PacketType.GET_CONFIG)
+        self.send_serial(proto.PacketType.GET_CONFIG)
 
     def on_set_config(self, config: proto.SetConfig):
         if self.quiet_mode:
             return
 
         self.get_logger().info("hwnode : on_set_config")
-        proto.write_packet(self.ser, config)
-        proto.write_null_packet(self.ser, proto.PacketType.SAVE_CONFIG)
-        proto.write_null_packet(self.ser, proto.PacketType.GET_CONFIG)
+        self.send_serial(config, proto.PacketType.SAVE_CONFIG, proto.PacketType.GET_CONFIG)
+        #proto.write_packet(self.ser, config)
+        #proto.write_null_packet(self.ser, proto.PacketType.SAVE_CONFIG)
+        #proto.write_null_packet(self.ser, proto.PacketType.GET_CONFIG)
 
     def numpy_to_pointcloud2(self, points, frame_id="tof_lidar"):
         fields = [
@@ -197,6 +208,93 @@ class HardwareNode(Node):
 
             float(payload.flags)
         ]
+        wheel_speeds = [
+            payload.front_left.speed,
+            payload.rear_left.speed,
+            payload.rear_right.speed,
+            payload.front_right.speed
+        ]
+
+        wheel_angles = [
+            payload.front_left.angle % (2 * math.pi),
+            payload.rear_left.angle % (2 * math.pi),
+            payload.rear_right.angle % (2 * math.pi),
+            payload.front_right.angle % (2 * math.pi)
+        ]
+
+        if self.prev_wheel_angles is None:
+            self.prev_wheel_angles = wheel_angles.copy()
+            self.wheel_angle_deltas = [0.0] * 4
+        else:
+            for i in range(4):
+                curr = wheel_angles[i]
+                prev = self.prev_wheel_angles[i]
+
+                delta = curr - prev
+                delta = (delta + math.pi) % (2 * math.pi) - math.pi
+                self.wheel_angle_deltas[i] = delta
+            self.prev_wheel_angles = wheel_angles.copy()
+        normalized_deltas = [
+            self.wheel_angle_deltas[0],
+            self.wheel_angle_deltas[1],
+            -self.wheel_angle_deltas[2],
+            -self.wheel_angle_deltas[3]
+        ]
+
+        now = self.get_clock().now()
+
+        if self.last_odom_time is None:
+            self.last_odom_time = now
+            return
+
+        dt = (now - self.last_odom_time).nanoseconds / 1e9
+        self.last_odom_time = now
+
+        if dt <= 0:
+            return
+        wheel_distances = [
+            delta * WHEEL_RADIUS
+            for delta in normalized_deltas
+        ]
+
+
+        delta_s_left = (wheel_distances[0] + wheel_distances[1]) / 2
+        delta_s_right = (wheel_distances[2] + wheel_distances[3]) / 2
+        delta_s = (delta_s_left + delta_s_right) / 2
+        delta_yaw = (delta_s_right - delta_s_left) / WHEEL_BASE
+
+
+        yaw_mid = self.odom_yaw + delta_yaw / 2
+
+        self.odom_x += delta_s * math.cos(yaw_mid)
+        self.odom_y += delta_s * math.sin(yaw_mid)
+        self.odom_yaw += delta_yaw
+
+        linear_velocity = delta_s / dt
+        angular_velocity = delta_yaw / dt
+
+        odom = Odometry()
+
+        odom.header.stamp = now.to_msg()
+        odom.header.frame_id = 'odom'
+        odom.child_frame_id = 'base_link'
+
+        odom.pose.pose.position.x = self.odom_x
+        odom.pose.pose.position.y = self.odom_y
+        odom.pose.pose.position.z = 0.0
+
+
+        odom.pose.pose.orientation.x = 0.0
+        odom.pose.pose.orientation.y = 0.0
+        odom.pose.pose.orientation.z = math.sin(self.odom_yaw / 2)
+        odom.pose.pose.orientation.w = math.cos(self.odom_yaw / 2)
+
+        odom.twist.twist.linear.x = linear_velocity
+        odom.twist.twist.linear.y = 0.0
+        odom.twist.twist.angular.z = angular_velocity
+
+        self.odom_pub.publish(odom)
+
         self.status_pub.publish(status)
 
     def handle_imu(self, payload):
@@ -249,7 +347,8 @@ class HardwareNode(Node):
         packet.rear_left = msg.data[2]
         packet.rear_right = msg.data[3]
 
-        proto.write_packet(self.ser, packet)
+        #proto.write_packet(self.ser, packet)
+        self.send_serial(packet)
         if all(abs(x) < 1e-6 for x in msg.data):
             self.wheel_test_active = False
         else:
@@ -258,14 +357,55 @@ class HardwareNode(Node):
     def handle_config(self, payload: proto.ConfigV1):
         self.get_logger().info(f"HANDLE CONFIG: {payload}")
         self.host_bridge.send_config(payload)
-        
+
+    def send_serial(self, *packets):
+        with self.serial_lock:
+            if self.quiet_mode or self.ser is None:
+                return False
+
+            try:
+                for packet in packets:
+                    if isinstance(packet, proto.PacketType):
+                        proto.write_null_packet(self.ser, packet)
+                    else:
+                        proto.write_packet(self.ser, packet)
+                return True
+
+            except (SerialException, OSError):
+                return False
+
     def read_loop(self):
         while rclpy.ok():
             if (self.quiet_mode):
                 time.sleep(0.1)
                 continue
 
-            ret = proto.read_packet(self.ser)
+            if self.ser is None:
+                try:
+                    ser = Serial(port=PORT, baudrate=SPEED, timeout=0.5, write_timeout=0.5)
+                    with self.serial_lock:
+                        if self.quiet_mode or self.ser is not None:
+                            ser.close()
+                            continue
+                        self.ser = ser
+                    self.get_logger().info(f"Serial connected: {PORT}")
+                except (SerialException, OSError):
+                    time.sleep(1)
+                continue
+
+            ser = self.ser
+            try:
+                ret = proto.read_packet(self.ser)
+            except (SerialException, OSError) as err:
+                self.get_logger().warning(f"Serial disconnected: {err}")
+
+                with self.serial_lock:
+                    if self.ser is ser:
+                        self.ser = None
+                        ser.close()
+
+                time.sleep(0.5)
+                continue
             if ret is None: continue
             type, payload = ret
             if type == proto.PacketType.STATUS:
@@ -305,7 +445,8 @@ class HardwareNode(Node):
         kp, ki, kd, limit, lpf_tf = msg.data
         pack = proto.PidState(kp, ki, kd, limit, lpf_tf)
         self.get_logger().info(f"Set PID params: {pack}")
-        proto.write_packet(self.ser, pack)
+        self.send_serial(pack)
+        #proto.write_packet(self.ser, pack)
 
     def ramp(self, current, target, accel_step, decel_step):
         step = accel_step if abs(target) > abs(current) else decel_step
@@ -345,7 +486,8 @@ class HardwareNode(Node):
         A, B, C, D = L, R, L, R
 
         pack = proto.ControlPacket(float(A), float(B), float(C), float(D))
-        proto.write_packet(self.ser, pack)
+        self.send_serial(pack)
+        #proto.write_packet(self.ser, pack)
 
         
 def main():
