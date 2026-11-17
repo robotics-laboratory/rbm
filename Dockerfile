@@ -171,6 +171,7 @@ RUN apt update && \
     gstreamer1.0-plugins-base \
     gstreamer1.0-plugins-good \
     gstreamer1.0-plugins-bad \
+    gstreamer1.0-plugins-ugly \
     gstreamer1.0-rtsp \
     && wget -P /usr/lib/$(gcc -dumpmachine)/gstreamer-1.0 https://storage.yandexcloud.net/the-lab-storage/rbm/libgsthoboth264.so \
     && rm -rf /var/lib/apt/lists/*

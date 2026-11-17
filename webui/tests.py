@@ -165,14 +165,14 @@ class CameraTest(BaseTest):
     name = "CAMERA"
 
     async def test(self):
-        output_file = Path("/tmp/camera-test.png")
+        output_file = Path("/tmp/camera-test.jpg")
         output_file.unlink(missing_ok=True)
-        Path("/tmp/camera-test.jpg").unlink(missing_ok=True)
 
         cmd = (
-            "ffmpeg -loglevel fatal "
-            "-f v4l2 -input_format mjpeg -video_size 1920x1080 -i /dev/video0 "
-            f"-ss 00:00:02 -frames:v 1 -y {output_file}"
+            "exec v4l2-ctl --device=/dev/video0 "
+            "--set-fmt-video=width=1280,height=720,pixelformat=MJPG "
+            "--stream-mmap --stream-skip=10 --stream-count=1 "
+            f"--stream-to={output_file}"
         )
 
         self.log("Waiting 2s for camera warm-up, then capturing one frame...", color="yellow")

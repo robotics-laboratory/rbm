@@ -20,3 +20,4 @@ services:
       - "/dev:/dev"
       - "/run/udev:/run/udev:ro"
       - "/usr/hobot:/usr/hobot:ro"
+      - "/sys/firmware/devicetree/base/model:/run/rbm-board-model:ro"
