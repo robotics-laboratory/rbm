@@ -4,10 +4,12 @@ import socket
 import psutil
 import asyncio
 import yaml
+import sys
 
 
 class HostControl:
     NETWORKS = {"wlan0": "wifi", "eth0": "eth", "wlan1": "hotspot"}
+    MODEL_PATH = Path("/opt/rbm/model")
     CONFIG_PATH = Path("/opt/rbm/esp-config.yaml")
     HOTSPOT_CONN_FILE = Path("/etc/NetworkManager/system-connections/hotspot.nmconnection")
     
@@ -17,9 +19,12 @@ class HostControl:
         self.esp_config = None
         self.hostname = self.get_hostname()
         self.saved_config = self.read_saved_config()
+        self.model = open(self.MODEL_PATH).read().strip() if self.MODEL_PATH.exists() else None
+        self.log(f"Config: {self.saved_config}")
+        self.log(f"Model: {self.model}")
 
     def log(self, msg: str):
-        print(f"[hostctl] {msg}")
+        print(f"[hostctl] {msg}", file=sys.stderr)
 
     def read_saved_config(self):
         try:
@@ -32,7 +37,11 @@ class HostControl:
         cpu = psutil.cpu_percent(interval=1.0)
         mem = psutil.virtual_memory().percent
         bpu = 0.0  # TODO
-        temp = int(open('/sys/class/hwmon/hwmon0/temp3_input').read()) / 1000
+        temp = 0.0
+        if self.model == "rdk":
+            temp = int(open("/sys/class/hwmon/hwmon0/temp3_input").read()) / 1000
+        if self.model == "raspberry":
+            temp = int(open("/sys/class/thermal/thermal_zone0/temp").read()) / 1000
         return {"cpu": cpu, "mem": mem, "bpu": bpu, "temp": temp}
 
     def get_networks(self):
