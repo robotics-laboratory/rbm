@@ -14,4 +14,4 @@ srt: false
 paths:
   cam:
     source: publisher
-    runOnDemand: /bin/bash /src/scripts/publish_camera.sh
+    runOnDemand: /src/packages/main/config/camera-stream.sh
