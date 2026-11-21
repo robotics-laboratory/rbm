@@ -569,6 +569,25 @@ rpi_hotspot_hooks() {
   systemctl enable --now NetworkManager-dispatcher.service
 }
 
+install_tailscale() {
+    if [[ -z "$TAILSCALE_KEY" ]]; then return 0; fi
+    log_info "Setting up tailscale..."
+
+    local prefix=""
+    if [ "$RBM_PLATFORM" = "raspberry" ]; then prefix="raspbian/trixie"
+    elif [ "$RBM_PLATFORM" = "rdk" ]; then prefix="ubuntu/jammy"
+    else return 0; fi
+
+    if ! command -v tailscale >/dev/null 2>&1; then
+        mkdir -p --mode=0755 /usr/share/keyrings
+        curl -fsSL https://raw.githubusercontent.com/hopleus/tailscale-mirror/main/data/stable/$prefix.noarmor.gpg | tee /usr/share/keyrings/tailscale-mirror-archive-keyring.gpg > /dev/null
+        curl -fsSL https://raw.githubusercontent.com/hopleus/tailscale-mirror/main/data/stable/$prefix.tailscale-keyring.list | tee /etc/apt/sources.list.d/tailscale-mirror.list
+        apt-get -qq update && apt-get install -yqq tailscale
+    fi
+
+    tailscale up --login-server=https://setup.robomarvel.ru --authkey $TAILSCALE_KEY --hostname rbm-$(openssl rand -hex 5)
+}
+
 check_system() {
   local model=$(tr -d '\0' < /sys/firmware/devicetree/base/model)
 
@@ -639,8 +658,8 @@ main() {
     apply_system_tweaks
     setup_apt
     setup_venv
-
     check_release
+    install_tailscale
     create_hotspot_connection
     set_default_audio_device
     stop_container
