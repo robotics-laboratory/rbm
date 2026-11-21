@@ -1,6 +1,6 @@
 services:
   ros:
-    image: registry.robotics-lab.ru/robomarvel:v7
+    image: registry.robotics-lab.ru/robomarvel:v8
     build: .
     platform: linux/arm64
     container_name: ros
