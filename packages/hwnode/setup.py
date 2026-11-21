@@ -17,9 +17,5 @@ setup(
     description="hwnode",
     license="MIT",
     extras_require={},
-    entry_points={
-        "console_scripts": [
-            "hwnode = hwnode.hwnode:main"
-        ],
-    },
+    scripts=["scripts/hwnode"],
 )
