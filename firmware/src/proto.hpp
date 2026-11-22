@@ -253,6 +253,7 @@ public:
 
 				sendPacket(MSG_HOST_CONTROL, &host_control_pack_out_, sizeof(host_control_pack_out_));
 			}
+			now = millis();
 
 			if (now - last_control_ms_ >= CONTROL_TIMEOUT_MS) {
 				motors_.setTargets(0,0,0,0);
