@@ -5,6 +5,7 @@ from enum import IntEnum
 import logging
 import struct
 import ctypes
+from serial import Serial, SerialException
 
 CRC = Model("CRC8-SMBUS")   # poly=0x07, init=0x00, ref_in=False, ref_out=False, xor_out=0x00
 
@@ -235,6 +236,8 @@ def read_packet(ser: Serial):
         elif type == PacketType.LOG:
             return type, LogPacket.from_buffer_copy(payload)
 
+    except (SerialException, OSError):
+        raise
     except Exception as err:
         logging.error(f"PROTO ERR: {err}")
 
