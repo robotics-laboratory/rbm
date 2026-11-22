@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from serial import Serial
+from serial import Serial, SerialException
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Float32MultiArray, Header, String, Bool
 from sensor_msgs.msg import Imu, PointCloud2, PointField
@@ -54,9 +54,10 @@ class HardwareNode(Node):
 
         self.last_feedback: Feedback = None
         self.last_cmd_time = self.get_clock().now()
-        self.ser = Serial(port=PORT, baudrate=SPEED, timeout=0.5)
+        # self.ser = Serial(port=PORT, baudrate=SPEED, timeout=0.5)
         
         self.serial_lock = Lock()
+        self.ser = None
 
         self.quiet_mode = False
         self.quiet_since = None
@@ -64,7 +65,7 @@ class HardwareNode(Node):
         self.quiet_sub = self.create_subscription(Bool, "/hardware/quiet_mode", self.quiet_callback, 10)
         self.quiet_tim = self.create_timer(1.0, self.quiet_watchdog)
 
-        self.get_logger().info(f"Serial connected: {PORT} @ {SPEED}")
+        #self.get_logger().info(f"Serial connected: {PORT} @ {SPEED}")
         self.host_bridge = HostBridge(
             logger=self.get_logger(),
             on_stats=self.on_host_status,
@@ -95,18 +96,20 @@ class HardwareNode(Node):
 
     def enable_quiet_mode(self):
         self.get_logger().warning("QUIET MODE: ON")
-        self.quiet_mode = True
-        self.quiet_since = time.monotonic()
-        if self.ser.is_open:
-            self.ser.close()
+        with self.serial_lock:
+            self.quiet_mode = True
+            self.quiet_since = time.monotonic()
+            ser = self.ser
+            self.ser = None
+            if ser is not None:
+                ser.close()
 
     def disable_quiet_mode(self):
-        if not self.quiet_mode:
-            return
-        if not self.ser.is_open:
-            self.ser.open()
-        self.quiet_mode = False
-        self.quiet_since = None
+        with self.serial_lock:
+            if not self.quiet_mode:
+                return
+            self.quiet_mode = False
+            self.quiet_since = None
         self.get_logger().warning("QUIET MODE: OFF")
 
     def quiet_watchdog(self):
@@ -119,23 +122,24 @@ class HardwareNode(Node):
     def on_host_status(self, status: proto.HostStatusPacket):
         if self.quiet_mode:
             return
-        proto.write_packet(self.ser, status)
+        self.send_serial(status)
 
     def on_get_config(self):
         if self.quiet_mode:
             return
 
         self.get_logger().info("hwnode : on_get_config")
-        proto.write_null_packet(self.ser, proto.PacketType.GET_CONFIG)
+        self.send_serial(proto.PacketType.GET_CONFIG)
 
     def on_set_config(self, config: proto.SetConfig):
         if self.quiet_mode:
             return
 
         self.get_logger().info("hwnode : on_set_config")
-        proto.write_packet(self.ser, config)
-        proto.write_null_packet(self.ser, proto.PacketType.SAVE_CONFIG)
-        proto.write_null_packet(self.ser, proto.PacketType.GET_CONFIG)
+        self.send_serial(config, proto.PacketType.SAVE_CONFIG, proto.PacketType.GET_CONFIG)
+        #proto.write_packet(self.ser, config)
+        #proto.write_null_packet(self.ser, proto.PacketType.SAVE_CONFIG)
+        #proto.write_null_packet(self.ser, proto.PacketType.GET_CONFIG)
 
     def numpy_to_pointcloud2(self, points, frame_id="tof_lidar"):
         fields = [
@@ -249,7 +253,8 @@ class HardwareNode(Node):
         packet.rear_left = msg.data[2]
         packet.rear_right = msg.data[3]
 
-        proto.write_packet(self.ser, packet)
+        #proto.write_packet(self.ser, packet)
+        self.send_serial(packet)
         if all(abs(x) < 1e-6 for x in msg.data):
             self.wheel_test_active = False
         else:
@@ -258,14 +263,55 @@ class HardwareNode(Node):
     def handle_config(self, payload: proto.ConfigV1):
         self.get_logger().info(f"HANDLE CONFIG: {payload}")
         self.host_bridge.send_config(payload)
-        
+
+    def send_serial(self, *packets):
+        with self.serial_lock:
+            if self.quiet_mode or self.ser is None:
+                return False
+
+            try:
+                for packet in packets:
+                    if isinstance(packet, proto.PacketType):
+                        proto.write_null_packet(self.ser, packet)
+                    else:
+                        proto.write_packet(self.ser, packet)
+                return True
+
+            except (SerialException, OSError):
+                return False
+
     def read_loop(self):
         while rclpy.ok():
             if (self.quiet_mode):
                 time.sleep(0.1)
                 continue
 
-            ret = proto.read_packet(self.ser)
+            if self.ser is None:
+                try:
+                    ser = Serial(port=PORT, baudrate=SPEED, timeout=0.5, write_timeout=0.5)
+                    with self.serial_lock:
+                        if self.quiet_mode or self.ser is not None:
+                            ser.close()
+                            continue
+                        self.ser = ser
+                    self.get_logger().info(f"Serial connected: {PORT}")
+                except (SerialException, OSError):
+                    time.sleep(1)
+                continue
+
+            ser = self.ser
+            try:
+                ret = proto.read_packet(ser)
+            except (SerialException, OSError) as err:
+                self.get_logger().warning(f"Serial disconnected: {err}")
+
+                with self.serial_lock:
+                    if self.ser is ser:
+                        self.ser = None
+                        ser.close()
+
+                time.sleep(0.5)
+                continue
             if ret is None: continue
             type, payload = ret
             if type == proto.PacketType.STATUS:
@@ -305,7 +351,8 @@ class HardwareNode(Node):
         kp, ki, kd, limit, lpf_tf = msg.data
         pack = proto.PidState(kp, ki, kd, limit, lpf_tf)
         self.get_logger().info(f"Set PID params: {pack}")
-        proto.write_packet(self.ser, pack)
+        self.send_serial(pack)
+        #proto.write_packet(self.ser, pack)
 
     def ramp(self, current, target, accel_step, decel_step):
         step = accel_step if abs(target) > abs(current) else decel_step
@@ -345,7 +392,8 @@ class HardwareNode(Node):
         A, B, C, D = L, R, L, R
 
         pack = proto.ControlPacket(float(A), float(B), float(C), float(D))
-        proto.write_packet(self.ser, pack)
+        self.send_serial(pack)
+        #proto.write_packet(self.ser, pack)
 
         
 def main():
