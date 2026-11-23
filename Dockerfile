@@ -101,11 +101,14 @@ RUN apt update && \
     ros-$ROS_DISTRO-xacro \
     ros-$ROS_DISTRO-robot-state-publisher \
     ros-$ROS_DISTRO-robot-localization \
+    ros-$ROS_DISTRO-teleop-twist-keyboard \
     && rm -rf /var/lib/apt/lists/*
 
-# Install rtabmap-odom
+# Install rtabmap
 RUN apt update && \
-    apt install -y ros-$ROS_DISTRO-rtabmap-odom \
+    apt install -y \
+    ros-$ROS_DISTRO-rtabmap-odom \
+    ros-$ROS_DISTRO-rtabmap-slam \
     && export MARCH=$(gcc -dumpmachine) \
     && rm -rf /usr/lib/$MARCH/libLLVM* \
     && rm -rf /usr/lib/$MARCH/libgallium* \
@@ -171,6 +174,7 @@ RUN apt update && \
     gstreamer1.0-plugins-base \
     gstreamer1.0-plugins-good \
     gstreamer1.0-plugins-bad \
+    gstreamer1.0-plugins-ugly \
     gstreamer1.0-rtsp \
     && wget -P /usr/lib/$(gcc -dumpmachine)/gstreamer-1.0 https://storage.yandexcloud.net/the-lab-storage/rbm/libgsthoboth264.so \
     && rm -rf /var/lib/apt/lists/*

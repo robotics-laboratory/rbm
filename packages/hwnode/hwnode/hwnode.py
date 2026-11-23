@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from serial import Serial
+from hwnode.auto_serial import AutoReconnectSerial
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Float32MultiArray, Header, String, Bool
 from sensor_msgs.msg import Imu, PointCloud2, PointField
@@ -15,10 +15,11 @@ import struct
 import time
 import numpy as np
 
+
 WHEEL_RADIUS = 0.045 / 2  # m
 WHEEL_BASE = 0.140  # m
-MAX_LINEAR = 0.5  # !!! 0.5  # m/s
-MAX_ANGULAR = 2.5 # !!! 2.5  # rad/s
+MAX_LINEAR = 0.5  # m/s
+MAX_ANGULAR = 2.5 # rad/s
 MAX_ACCEL_LINEAR = 0.3  # m/s²
 MAX_ACCEL_ANGULAR = 5.0  # rad/s²
 MAX_DECEL_LINEAR = 2.0  # m/s²
@@ -52,19 +53,19 @@ class HardwareNode(Node):
         self.v_left = 0.0
         self.v_right = 0.0
 
-        self.last_feedback: Feedback = None
         self.last_cmd_time = self.get_clock().now()
-        self.ser = Serial(port=PORT, baudrate=SPEED, timeout=0.5)
+        self.ser = AutoReconnectSerial(
+            port=PORT,
+            baudrate=SPEED,
+            timeout=0.5,
+            logger=self.get_logger(),
+        )
         
-        self.serial_lock = Lock()
-
         self.quiet_mode = False
         self.quiet_since = None
-
         self.quiet_sub = self.create_subscription(Bool, "/hardware/quiet_mode", self.quiet_callback, 10)
         self.quiet_tim = self.create_timer(1.0, self.quiet_watchdog)
 
-        self.get_logger().info(f"Serial connected: {PORT} @ {SPEED}")
         self.host_bridge = HostBridge(
             logger=self.get_logger(),
             on_stats=self.on_host_status,
@@ -126,7 +127,7 @@ class HardwareNode(Node):
             return
 
         self.get_logger().info("hwnode : on_get_config")
-        proto.write_null_packet(self.ser, proto.PacketType.GET_CONFIG)
+        proto.write_packet(self.ser, proto.PacketType.GET_CONFIG)
 
     def on_set_config(self, config: proto.SetConfig):
         if self.quiet_mode:
@@ -134,8 +135,8 @@ class HardwareNode(Node):
 
         self.get_logger().info("hwnode : on_set_config")
         proto.write_packet(self.ser, config)
-        proto.write_null_packet(self.ser, proto.PacketType.SAVE_CONFIG)
-        proto.write_null_packet(self.ser, proto.PacketType.GET_CONFIG)
+        proto.write_packet(self.ser, proto.PacketType.SAVE_CONFIG)
+        proto.write_packet(self.ser, proto.PacketType.GET_CONFIG)
 
     def numpy_to_pointcloud2(self, points, frame_id="tof_lidar"):
         fields = [
@@ -261,11 +262,11 @@ class HardwareNode(Node):
         
     def read_loop(self):
         while rclpy.ok():
-            if (self.quiet_mode):
+            if self.quiet_mode:
                 time.sleep(0.1)
                 continue
 
-            ret = proto.read_packet(self.ser)
+            ret = proto.read_packet(self.ser, self.get_logger())
             if ret is None: continue
             type, payload = ret
             if type == proto.PacketType.STATUS:

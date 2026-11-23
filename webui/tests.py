@@ -165,14 +165,14 @@ class CameraTest(BaseTest):
     name = "CAMERA"
 
     async def test(self):
-        output_file = Path("/tmp/camera-test.png")
+        output_file = Path("/tmp/camera-test.jpg")
         output_file.unlink(missing_ok=True)
-        Path("/tmp/camera-test.jpg").unlink(missing_ok=True)
 
         cmd = (
-            "ffmpeg -loglevel fatal "
-            "-f v4l2 -input_format mjpeg -video_size 1920x1080 -i /dev/video0 "
-            f"-ss 00:00:02 -frames:v 1 -y {output_file}"
+            "v4l2-ctl --device=/dev/video0 "
+            "--set-fmt-video=width=1920,height=1080,pixelformat=MJPG "
+            "--stream-mmap --stream-skip=10 --stream-count=1 "
+            f"--stream-to={output_file}"
         )
 
         self.log("Waiting 2s for camera warm-up, then capturing one frame...", color="yellow")
@@ -854,8 +854,23 @@ class UpdateWifiSettings(BaseTest):
         assert ssid, "Wifi ssid not set"
         assert password, "Wifi password not set"
         await self.shell("nmcli device wifi rescan")
-        await self.shell("nmcli device wifi list", timeout=30)
-        await self.shell(f"nmcli dev wifi connect \"{ssid}\" password \"{password}\" ifname wlan0")
+        await self.shell("nmcli device wifi list ifname wlan0", timeout=30)
+
+        restore_hotspot = False
+        if app.state.hostctl.model == "raspberry":
+            state = await self.shell("nmcli -g GENERAL.STATE connection show hotspot", check=False)
+            if state.strip() == "activated":
+                restore_hotspot = True
+                self.log("!!! Hotspot connection will be temporary disabled !!!", color="yellow")
+                await asyncio.sleep(2)
+                await self.shell("nmcli connection down hotspot")
+                await asyncio.sleep(2)
+
+        await self.shell(f"echo \"{password}\" | nmcli dev wifi connect \"{ssid}\" ifname wlan0 --ask")
+
+        if restore_hotspot:
+            await self.shell("nmcli connection up hotspot")
+
         return True
 
 class RestartDocker(BaseTest):

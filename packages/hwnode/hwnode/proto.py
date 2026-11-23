@@ -2,7 +2,6 @@ from cobs import cobs
 from anycrc import Model
 from serial import Serial
 from enum import IntEnum
-import logging
 import struct
 import ctypes
 
@@ -145,8 +144,6 @@ class HostControlPacket(ctypes.Structure):
     def __repr__(self):
         return self.act.decode("utf-8", errors="ignore").rstrip("\x00") 
 
-#Fixme переписать, когда будет норм структура на стороне прошивки
-# Переименовал моторы, но структуру все равно поменять
 class MotorDir(ctypes.Structure):
     _pack_ = 1
     _fields_ = [
@@ -210,12 +207,13 @@ def ctypes_to_dict(obj):
         return obj
 
 
-def read_packet(ser: Serial):
+def read_packet(ser: Serial, logger):
     try:
         frame = ser.read_until(b"\x00")
         frame = frame.rstrip(b"\x00")
+        if not frame: return
         if len(frame) < 3:
-            logging.error(f"FRAME TOO SMALL: {frame}")
+            logger.error(f"[proto] frame too small: {frame}")
             return
         frame = cobs.decode(frame)
         type, payload, crc = frame[0], frame[1:-1], frame[-1]
@@ -236,11 +234,13 @@ def read_packet(ser: Serial):
             return type, LogPacket.from_buffer_copy(payload)
 
     except Exception as err:
-        logging.error(f"PROTO ERR: {err}")
+        logger.error(f"[proto] parse err: {err}")
 
 
 def write_packet(ser: Serial, packet):
-    if isinstance(packet, ControlPacket):
+    if isinstance(packet, PacketType):
+        msg_type = packet
+    elif isinstance(packet, ControlPacket):
         msg_type = PacketType.CONTROL
     elif isinstance(packet, PidState):
         msg_type = PacketType.PID
@@ -251,16 +251,8 @@ def write_packet(ser: Serial, packet):
     else:
         raise RuntimeError(f"Unknown packet type: {type(packet)}")
 
-    payload = bytes(packet)
-    crc = CRC.calc(payload).to_bytes(1, 'little')
-    frame = cobs.encode(msg_type.to_bytes(1, 'little') + payload + crc) + b'\x00'
-    ser.write(frame)
-    ser.flush()
-
-
-# FIXME: Сделать универсальную функцию (объединить с write_packet)
-def write_null_packet(ser : Serial, msg_type: PacketType, payload : bytes = b""):
+    payload = b"" if isinstance(packet, PacketType) else bytes(packet)
     crc = CRC.calc(payload).to_bytes(1, "little")
-    frame = cobs.encode(msg_type.to_bytes(1, "little") + payload + crc) + b"\x00"
+    frame = cobs.encode(msg_type.to_bytes(1, "little") + payload + crc) + b'\x00'
     ser.write(frame)
     ser.flush()
