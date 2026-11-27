@@ -1,0 +1,31 @@
+launch:
+  - arg:
+      name: driver
+      default: game_controller_node
+
+  - arg:
+      name: cmd_vel_topic
+      default: /cmd_vel_joy
+
+  - arg:
+      name: config
+      default: "$(find-pkg-share main)/config/gamepad.yaml"
+
+  - node:
+      pkg: joy
+      exec: "$(var driver)"
+      name: gamepad_driver
+      output: screen
+      env:
+        - name: SDL_JOYSTICK_HIDAPI_PS4
+          value: "0"
+      param:
+        - from: "$(var config)"
+
+  - node:
+      pkg: main
+      exec: gamepad_teleop.py
+      name: gamepad_teleop
+      output: screen
+      param:
+        - from: "$(var config)"

@@ -1,0 +1,19 @@
+gamepad_driver:
+  ros__parameters:
+    device_id: 0
+    deadzone: 0.1
+    autorepeat_rate: 20.0
+    sticky_buttons: false
+
+gamepad_teleop:
+  ros__parameters:
+    max_linear: 0.35
+    max_angular: 1.3889
+
+    linear_axis: 1
+    angular_axis: 2
+
+    linear_sign: 1.0
+    angular_sign: 1.0
+
+    joy_timeout: 0.3

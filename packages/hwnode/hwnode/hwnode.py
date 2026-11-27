@@ -1,3 +1,4 @@
+import time
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
@@ -14,13 +15,19 @@ from typing import ClassVar
 
 WHEEL_RADIUS = 0.021  # m
 WHEEL_BASE = 0.128  # m
-MAX_LINEAR = 0.3  # m/s
+MAX_LINEAR = 0.7  # m/s
 MAX_ANGULAR = 2.5  # rad/s
-MAX_ACCEL_LINEAR = 0.1  # m/s²
-MAX_ACCEL_ANGULAR = 5.0  # rad/s²
-MAX_DECEL_LINEAR = 2.0  # m/s²
-MAX_DECEL_ANGULAR = 5.0  # rad/s²
+MAX_ACCEL_LINEAR = 0.1  # m/s^2
+MAX_ACCEL_ANGULAR = 5.0  # rad/s^2
+MAX_DECEL_LINEAR = 2.0  # m/s^2
+MAX_DECEL_ANGULAR = 5.0  # rad/s^2
 MAX_WHEEL_SPEED = 35.0  # rad/s
+
+JOY_ACCEL_LINEAR = 0.6   # m/s^2
+JOY_ACCEL_ANGULAR = 5.0  # rad/s^2
+
+JOY_DECEL_LINEAR = 1.5   # m/s^2
+JOY_DECEL_ANGULAR = 5.0  # rad/s^2
 
 CONTROL_HZ = 30
 ANGULAR_GAIN = 1.8
@@ -110,12 +117,14 @@ class HardwareNode(Node):
         self.battery_v = None
 
         self.last_packet: Packet = None
-        self.last_cmd_time = self.get_clock().now()
+        self.last_cmd_time = time.monotonic()
+        self.joy_active = False
         self.ser = Serial(port=PORT, baudrate=SPEED, timeout=0.1, exclusive=True)
         self.get_logger().info("Serial подключен")
 
         self.control_timer = self.create_timer(1.0 / CONTROL_HZ, self.update)
         self.cmd_sub = self.create_subscription(Twist, "/cmd_vel", self.cmd_callback, 1)
+        self.joy_sub = self.create_subscription(Twist, "/cmd_vel_joy", self.joy_callback, 1)
         self.imu_pub = self.create_publisher(Imu, "/hardware/imu", 1)
         self.status_pub = self.create_publisher(Float32MultiArray, "/hardware/status", 1)
         self.odom_pub = self.create_publisher(Odometry, "/hardware/odom", 1)
@@ -186,7 +195,17 @@ class HardwareNode(Node):
             self.odom_pub.publish(odom)
 
     def cmd_callback(self, msg: Twist):
-        self.last_cmd_time = self.get_clock().now()
+        if self.joy_active:
+            return
+
+        self.set_target(msg)
+
+    def joy_callback(self, msg: Twist):
+        self.joy_active = True
+        self.set_target(msg)
+
+    def set_target(self, msg: Twist):
+        self.last_cmd_time = time.monotonic()
         v = msg.linear.x * LINEAR_GAIN
         w = msg.angular.z * ANGULAR_GAIN
 
@@ -208,22 +227,45 @@ class HardwareNode(Node):
         return max(current - step, target)
 
     def update(self):
-        if (self.get_clock().now() - self.last_cmd_time).nanoseconds * 1e-9 > 0.3:
+        timed_out = (time.monotonic() - self.last_cmd_time > 0.3)
+
+        if timed_out:
             self.target_v = 0.0
             self.target_w = 0.0
 
-        self.current_v = self.ramp(
-            self.current_v,
-            self.target_v,
-            MAX_ACCEL_LINEAR / CONTROL_HZ,
-            MAX_DECEL_LINEAR / CONTROL_HZ,
-        )
-        self.current_w = self.ramp(
-            self.current_w,
-            self.target_w,
-            MAX_ACCEL_ANGULAR / CONTROL_HZ,
-            MAX_DECEL_ANGULAR / CONTROL_HZ,
-        )
+        if self.joy_active:
+            self.current_v = self.ramp(
+                self.current_v,
+                self.target_v,
+                JOY_ACCEL_LINEAR / CONTROL_HZ,
+                JOY_DECEL_LINEAR / CONTROL_HZ,
+            )
+
+            self.current_w = self.ramp(
+                self.current_w,
+                self.target_w,
+                JOY_ACCEL_ANGULAR / CONTROL_HZ,
+                JOY_DECEL_ANGULAR / CONTROL_HZ,
+            )
+
+            if timed_out:
+                self.current_v = 0.0
+                self.current_w = 0.0
+                self.joy_active = False
+
+        else:
+            self.current_v = self.ramp(
+                self.current_v,
+                self.target_v,
+                MAX_ACCEL_LINEAR / CONTROL_HZ,
+                MAX_DECEL_LINEAR / CONTROL_HZ,
+            )
+            self.current_w = self.ramp(
+                self.current_w,
+                self.target_w,
+                MAX_ACCEL_ANGULAR / CONTROL_HZ,
+                MAX_DECEL_ANGULAR / CONTROL_HZ,
+            )
 
         v_left = (self.current_v - self.current_w * self.L / 2) / self.R
         v_right = (self.current_v + self.current_w * self.L / 2) / self.R
