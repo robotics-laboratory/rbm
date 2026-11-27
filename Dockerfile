@@ -142,6 +142,7 @@ RUN apt update && \
     python3-pip \
     python3-venv \
     python3-serial \
+    ros-$ROS_DISTRO-joy \
     ros-$ROS_DISTRO-xacro \
     ros-$ROS_DISTRO-robot-state-publisher \
     ros-$ROS_DISTRO-robot-localization \

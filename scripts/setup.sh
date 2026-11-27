@@ -33,6 +33,12 @@ if [ "$EUID" -eq 0 ]; then
     exit 1
 fi
 
+install_gamepad_dependencies() {
+    log_info "Установка зависимостей Bluetooth-геймпада"
+    sudo apt-get -qq update
+    sudo apt-get -qq install -y python3-dbus-next
+}
+
 install_docker() {
     log_info "Проверка установки Docker"
     if command -v docker >/dev/null 2>&1; then
@@ -357,6 +363,7 @@ main() {
     log_info "=== НАЧАЛО НАСТРОЙКИ RASPBERRY ==="
 
     enable_passwordless_sudo
+    install_gamepad_dependencies
     install_docker
     install_platformio_udev
     install_platformio_tools

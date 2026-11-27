@@ -19,6 +19,8 @@ launch:
       env:
         - name: SDL_JOYSTICK_HIDAPI_PS4
           value: "0"
+        - name: SDL_JOYSTICK_DISABLE_UDEV
+          value: "1"
       param:
         - from: "$(var config)"
 
